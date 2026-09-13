@@ -103,6 +103,18 @@ FSENSITIVE_RE = re.compile(
     r"(password|passwd|ssn|credit|card|bank|token|secret|pin|otp)", re.I
 )
 
+# Spoken names -> window match terms. "opencode"/"coding agent" matches the
+# omarchy-launched agent terminal (class org.omarchy.agent, title "OC | ...").
+WINDOW_ALIASES = {
+    "opencode": ("org.omarchy.agent", "oc |", "oc ", "opencode"),
+    "coding agent": ("org.omarchy.agent", "oc |", "opencode"),
+    "codex": ("codex", "chatgpt"),
+    "terminal": ("org.omarchy.terminal", "ghostty", "foot", "alacritty", "kitty"),
+    "hermes": ("hermes",),
+    "browser": ("google-chrome", "chromium", "firefox"),
+    "file manager": ("org.gnome.Nautilus", "nautilus"),
+}
+
 
 # ---------------------------------------------------------------------------
 # Main controller
@@ -208,31 +220,47 @@ class DesktopController:
         mark = " and followed" if follow else " (kept focus)"
         return f"moved active window to workspace {num}{mark}"
 
-    def focus_window(self, app_or_title: str) -> dict:
-        needle = (app_or_title or "").strip()
-        if not needle:
-            raise _fail("focus_window needs a name")
-        windows = self._clients()
-        if not windows:
-            raise _fail("no windows are open")
-        # Exact match first, then substring on class, then title.
-        low = needle.lower()
+    def _resolve_window(self, hint: str) -> dict | None:
+        """Find a window by alias, class, or title substring.
 
-        def score(c) -> int:
+        Aliases let the model address the user's real apps naturally:
+        "opencode" / "the coding agent" matches the omarchy agent terminal that
+        runs OpenCode (class org.omarchy.agent or a title starting with "OC").
+        """
+        needle = (hint or "").strip()
+        if not needle:
+            return self._active() or None
+        aliases = WINDOW_ALIASES.get(needle.lower(), (needle.lower(),))
+        best = None
+        best_score = 0
+        for c in self._clients():
+            if c.get("hidden"):
+                continue
             hay = " ".join(
                 str(c.get(k) or "") for k in
                 ("class", "initialClass", "initialTitle", "title")
             ).lower()
-            if hay == low:
-                return 3
-            if low in str(c.get("class") or "").lower() or low in str(c.get("initialClass") or "").lower():
-                return 2
-            if low in hay:
-                return 1
-            return 0
+            for alias in aliases:
+                if not alias:
+                    continue
+                if hay == alias:
+                    score = 3
+                elif alias in str(c.get("class") or "").lower() or alias in str(c.get("initialClass") or "").lower():
+                    score = 2
+                elif alias in hay:
+                    score = 1
+                else:
+                    continue
+                if score > best_score:
+                    best, best_score = c, score
+        return best
 
-        best = max(windows, key=score, default=None)
-        if best is None or score(best) == 0:
+    def focus_window(self, app_or_title: str) -> dict:
+        needle = (app_or_title or "").strip()
+        if not needle:
+            raise _fail("focus_window needs a name")
+        best = self._resolve_window(needle)
+        if best is None:
             raise _fail(f"no window matches {needle!r}")
         address = best.get("address")
         if not address:
@@ -385,8 +413,14 @@ class DesktopController:
         return num
 
     # ---------------------------------------------------------- text typing
-    def type_text(self, text: str) -> str:
-        text = text.strip()
+    def type_text(self, window: str | None, text: str, send: bool = False) -> str:
+        """Type `text` into a target window (focus first).
+
+        With `send=True`, presses Return afterwards so a prompt lands in the
+        target app (e.g. to hand a request to the user's coding agent).
+        Level 2: ordinary, non-sensitive windows only.
+        """
+        text = (text or "").strip()
         if not text:
             raise _fail("nothing to type")
         if len(text) > 500:
@@ -396,11 +430,22 @@ class DesktopController:
                 "refused: text looks sensitive (password/secret/card). "
                 "The voice assistant never types into sensitive fields."
             )
+        win = self._resolve_window(window) if window else (self._active() or None)
+        if win is None:
+            raise _fail("no target window to type into")
+        address = win.get("address")
+        if address:
+            _dispatch(_lua_call("focus", window=address))
+            time.sleep(0.25)
         rc, out = run(["wtype", text], timeout=8.0)
         if rc != 0:
-            # Fallback: drive through hyprland's send_shortcut? No - keep it simple.
-            raise _fail(f"wtype failed: {out}")
-        return "typed text"
+            raise _fail(f"could not type text: {out}")
+        if send:
+            rc, out = run(["wtype", "-k", "Return"], timeout=8.0)
+            if rc != 0:
+                raise _fail(f"typed text but could not press Enter: {out}")
+            return f"typed and sent into {win.get('class') or 'window'}"
+        return f"typed into {win.get('class') or 'window'} (not sent)"
 
     # ----------------------------------------------------------- dispatcher
     def execute(self, operation: str, **kwargs):

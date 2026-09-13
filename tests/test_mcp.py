@@ -27,8 +27,8 @@ class McpHandshakeTest(unittest.TestCase):
         res = call(h, "tools/list")
         names = {t["name"] for t in res["result"]["tools"]}
         self.assertIn("switch_workspace", names)
+        self.assertIn("type_text", names)  # window-targeted, Level 2
         self.assertNotIn("run_shell", names)
-        self.assertNotIn("type_text", names)  # deliberately not exposed over voice
         for tool in res["result"]["tools"]:
             self.assertTrue(tool["inputSchema"]["type"] == "object")
 

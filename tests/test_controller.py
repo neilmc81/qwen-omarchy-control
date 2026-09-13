@@ -79,6 +79,29 @@ class ControllerTest(unittest.TestCase):
         with self.assertRaises(DesktopError):
             self.ctrl.focus_window("nothing-matches-this")
 
+    def test_opencode_alias_resolves_to_agent_window(self):
+        self.fake.clients = list(WINDOWS) + [{
+            "address": "0xddd", "class": "org.omarchy.agent",
+            "title": "OC | Fix the failing tests", "initialTitle": "",
+            "workspace": {"name": "1"}, "pid": 99, "hidden": False,
+        }]
+        got = self.ctrl.focus_window("opencode")
+        self.assertEqual(got["class"], "org.omarchy.agent")
+        # also by the "coding agent" alias
+        got2 = self.ctrl.focus_window("coding agent")
+        self.assertEqual(got2["address"], "0xddd")
+
+    def test_type_text_uses_wtype_and_enter(self):
+        self.ctrl.type_text("hermes", "hello there", send=True)
+        cmds = [c.args[0] for c in desktop.run.call_args_list]
+        wtype_calls = [c for c in cmds if c[0] == "wtype"]
+        self.assertEqual(wtype_calls[0], ["wtype", "hello there"])
+        self.assertEqual(wtype_calls[1], ["wtype", "-k", "Return"])
+
+    def test_type_text_rejects_sensitive(self):
+        with self.assertRaises(DesktopError):
+            self.ctrl.type_text("terminal", "my password is hunter2")
+
     def test_set_volume_limits(self):
         with self.assertRaises(DesktopError):
             self.ctrl.set_volume(-1)

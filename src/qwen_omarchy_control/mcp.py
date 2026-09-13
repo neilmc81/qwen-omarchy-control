@@ -147,6 +147,29 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "type_text",
+        "description": "Focus a window and type text into it, optionally pressing Enter to "
+                       "send. This is how you hand a request to the user's coding agent "
+                       "(e.g. window='opencode' or 'coding agent', or a terminal): the user "
+                       "asks, you type the prompt and send=True. Only type user-approved, "
+                       "non-sensitive content; never type into password/payment/auth fields. "
+                       "Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window": {"type": "string",
+                           "description": "Window to type into: 'opencode'/'coding agent', "
+                                          "'terminal', 'browser', or a class/title substring. "
+                                          "Empty = the focused window."},
+                "text": {"type": "string", "description": "Literal text to type."},
+                "send": {"type": "boolean", "default": False,
+                         "description": "Press Enter afterwards (submit the prompt)."},
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -253,6 +276,12 @@ class McpHandler:
             return {"result": ctrl.close_active_window()}
         if name == "open_url":
             return {"result": ctrl.open_url(str(args["url"]))}
+        if name == "type_text":
+            return {"result": ctrl.type_text(
+                str(args["window"]) if args.get("window") else None,
+                str(args["text"]),
+                bool(args.get("send", False)),
+            )}
         raise PolicyError(f"tool not exposed by this server: {name!r}")
 
     # -- encoding helpers ---------------------------------------------------

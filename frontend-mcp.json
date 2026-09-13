@@ -29,7 +29,8 @@
         "get_system_status": { "enabled": true, "description": "OS, kernel, hostname, uptime, memory, time." },
         "move_active_window_to_workspace": { "enabled": true, "description": "Move the focused window to a numbered workspace." },
         "close_active_window": { "enabled": true, "description": "Close the focused application window." },
-        "open_url": { "enabled": true, "description": "Open an http(s) URL in the default browser." }
+        "open_url": { "enabled": true, "description": "Open an http(s) URL in the default browser." },
+        "type_text": { "enabled": true, "description": "Focus a window and type text (optionally press Enter to send). Used to hand prompts to the user's coding agent window ('opencode')." }
       }
     }
   }
