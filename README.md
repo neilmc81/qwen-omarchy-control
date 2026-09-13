@@ -105,23 +105,27 @@ which keeps its own per-action permission prompts.
 
 ## Controlling your applications and agents
 
-- **Drive any app/agent window**: say *"ask opencode to ..."*, *"use codex to
-  ..."*, *"tell chatgpt to ..."*, *"have hermes ..."* - the assistant focuses
-  that window, types your request, and presses Enter (`type_text`, window
-  aliases: opencode / coding agent / codex / chatgpt / hermes / terminal /
-  browser).
-- **Voice read-back**: say *"read it back"*, *"what did it say?"*, or just ask
-  what a window shows - the assistant OCRs the window (`read_window`/`read_screen`)
-  and summarizes it out loud.
+- **Coding / build requests now run in a VISIBLE window** (no headless backend):
+  say *"build me X"*, *"use hermes to ..."*, *"ask codex to ..."* — the assistant
+  calls `launch_agent`, which opens that agent's TUI in a terminal window (foot,
+  class `qwen-hermes` / `qwen-codex` / `qwen-opencode`) with your request already
+  submitted and the window held open (`foot -H`). You watch it work.
+  The headless Hermes ACP backend is disabled (`AGENT_PROTOCOL=` empty).
+- **Read-back**: say *"read it back"*, *"what did it say?"* — the assistant OCRs
+  the agent window (`read_window`/`read_screen`) and summarizes it out loud.
+- **Drive any open window**: `type_text` focuses a window and types (optional
+  Enter); aliases: opencode / coding agent / codex / chatgpt / hermes / terminal /
+  browser.
 - **Find apps**: `launch_app` resolves installed desktop entries; a fix now
   handles desktop files with duplicated keys (e.g. Google Chrome) that a strict
   parser rejected.
 
 Limitations: OCR of terminal/TUI text is approximate (small/low-contrast text
-can garble). For clean results, prefer delegating to Hermes (its results return
-as text to the voice layer) or have the assistant drive a CLI agent headless.
-Driving a window requires that window to be open; a not-yet-open app can be
-launched first.
+can garble). The realtime model sometimes answers simple "build me X" requests
+inline (writes the code itself) instead of opening the agent window — if you
+want the visible agent every time, say "use hermes to ..." explicitly. Avoid
+literal `/paths` in spoken requests (the Qwen TUI treats absolute paths as file
+attachments).
 
 ## Safety policy
 
