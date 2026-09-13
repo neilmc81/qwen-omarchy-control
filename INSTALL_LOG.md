@@ -174,5 +174,5 @@ No OpenAI realtime/STT/TTS is used anywhere in the voice path.
 - [x] 13. Mute the computer (fast path, verified sink muted)
 - [x] 14. Unmute the computer (fast path, verified unmuted)
 - [x] 15-18. Coding-agent task (git status of ~/Work) reached Hermes; result returned to voice
-- [ ] 19-21. Destructive-command gating: Hermes `approvals.mode: off` in ~/.hermes config — a spoken delete executed without a prompt. **This reflects the user's existing Hermes policy; a voice-layer decision is required (see final report).**
+- [ ] 19-21. Destructive-command gating: Hermes `approvals.mode: off` in ~/.hermes config — a spoken delete executed without a prompt. **RESOLVED BY USER: leave approvals off (intentional). The voice assistant inherits your coder's no-prompt destructive policy; only voice-safe desktop operations are hard-gated by the controller.**
 - [x] 22-25. Restart: config survived, frontend MCP (17 tools) + backend READY, single gateway process, no orphaned MCP processes

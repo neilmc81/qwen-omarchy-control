@@ -164,13 +164,13 @@ Automated acceptance run, 2026-09-13 (see INSTALL_LOG.md for the full table):
 ## Safety note (read this)
 
 Hermes (the delegated coding backend) is configured with `approvals.mode: off`
-in `~/.hermes/config.yaml`. This is your existing coder's policy: it does not
-prompt before destructive actions. The voice layer inherits that — a spoken
-"delete the file ..." will be executed by Hermes without a prompt. If you want
-the voice assistant to ask before destructive actions, set
-`approvals.mode: manual|smart` in that file (Hermes then requests permission,
-and the gateway surfaces it as a confirmation you must answer). Decide before
-using voice for anything destructive.
+in `~/.hermes/config.yaml`. **This is your existing coder's policy and you chose
+to keep it.** It does not prompt before destructive actions, and the voice layer
+inherits that: a spoken "delete the file ..." will be executed by Hermes without
+a prompt. If you ever want voice gating, set `approvals.mode: manual|smart` in
+that file (Hermes then requests permission, and the gateway surfaces it as a
+confirmation you must answer). The desktop *controller* layer (workspaces,
+windows, volume, apps, URLs) remains strictly allowlisted regardless.
 
 ## Files generated / modified during setup
 
