@@ -1,0 +1,106 @@
+# INSTALL_LOG - what was changed on this machine
+
+Rebuilt on **2026-09-13** as a full replacement for the previous `omarchy-voice`
+(OpenRouter whisper→planner→TTS) system, which was moved to a backup.
+
+## Audit snapshot (Phase 0)
+
+| Item | Value |
+| --- | --- |
+| Omarchy | 4.0.3-1 (Arch `ID=omarchy`, kernel 7.2.3-arch1-3) |
+| Hyprland | 0.56.2 (Lua dispatcher API, `hl.dsp.*`) |
+| Node / npm | v26.8.1 / 11.19.0 |
+| Python | 3.14.7 |
+| Git | 2.55.0 |
+| PipeWire | 1.6.8, wireplumber running, no pulseaudio daemon |
+| Audio | Sink 56 `Built-in Audio Analog Stereo`; source 57 (analog stereo) |
+| User | `neil`, Wayland session `wayland-1` |
+| Existing AI coders | hermes (native ACP), opencode (native ACP), codex (adapter), claude, gemini |
+| Existing services | hermes-gateway (enabled), omarchy-voice-wake (disabled), voxtype (enabled) |
+
+## Packages / global installs
+
+- `npm install -g qwen-audio-agent` -> v1.11.0 (159 packages).
+- Existing system packages left as-is (portaudio was already installed; the Qwen
+  TUI's Python audio bridge pulls `sounddevice` on first Linux use).
+
+## Qwen Audio Agent configuration
+
+- Created `~/.config/qwaudio/config.env` (mode 0600) with:
+  - `QWEN_AUDIO_REALTIME_MODEL=qwen-audio-3.0-realtime-flash`
+  - `QWEN_AUDIO_REALTIME_BASE_URL=wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime`
+    (international / Singapore region)
+  - `AGENT_PROTOCOL=hermes`
+  - `QWEN_AUDIO_AGENT_BACKEND_PERMISSION_MODE=native`
+  - `QWEN_AUDIO_FRONTEND_MCP_CONFIG=.../qwen-omarchy-control/frontend-mcp.json`
+  - `DASHSCOPE_API_KEY=` placeholder (user must paste the real key)
+- Template backup: `~/.config/qwaudio/config.env.bak-*`
+- Persona / desktop-routing instructions added to `~/.config/qwaudio/ASSISTANT.md`
+
+## Gateway user service
+
+- `qwenaudio gateway install` created `~/.config/systemd/user/qwen-audio-agent-gateway.service`.
+- Fixed a generated-unit bug: `WorkingDirectory="..."` wrapped in literal quotes
+  -> systemd reported "path is not absolute"; removed the quotes.
+- Service binds `127.0.0.1:3101` (loopback, not exposed) and reuses Hermes
+  authentication. Verified it starts and connects Hermes with a placeholder key
+  (to prove wiring; no real credential is used or stored yet).
+
+## Desktop controller (new local project)
+
+Created `~/.local/share/qwen-omarchy-control/` (git repo, MIT):
+- `src/qwen_omarchy_control/`: `desktop.py` (controller), `discovery.py`,
+  `policy.py`, `mcp.py` (stdio MCP server), `cli.py`.
+- `bin/desktop-control`, `bin/desktop-mcp`, `bin/qwen-voice-toggle.sh`,
+  `bin/qwen-logs.sh`.
+- `tests/` - 24 unit tests (policy levels, discovery, MCP wire, controller args).
+- `frontend-mcp.json` - enables 17 desktop tools through the Qwen frontend MCP
+  client (fast path for simple desktop commands).
+- `uninstall.sh`, `README.md`, `INSTALL_LOG.md`, `.gitignore`, `LICENSE` (MIT
+  with attribution to omarchy-voice / qwen-audio-agent).
+
+All tests pass; the MCP wire was verified against the real
+`@modelcontextprotocol/sdk` used by the gateway (list + call tools end to end),
+also from a bare environment without Wayland/Hyprland env, proving the gateway
+service can drive the desktop controller.
+
+## Old system removal
+
+The previous `omarchy-voice` integration was backed up to
+`~/.local/share/qwen-omarchy-control-backups/old-system-20260913-180519`:
+- bar plugin `voice.indicator` -> backup
+- `~/.config/omarchy-voice/` (incl. its env) -> backup (never committed to git)
+- `omarchy-voice-wake.service` unit + wants symlinks -> removed
+- `~/.local/bin/omarchy-voice` launcher -> backup
+- `~/.local/share/omarchy-voice/` project -> backup
+- `SUPER+SHIFT+V` re-bound from `omarchy-voice command toggle` to the new
+  Qwen voice toggle script.
+
+## Hyprland binding
+
+- Backup `bindings.lua.bak-qwen-<ts>`.
+- `SUPER+SHIFT+V` -> `~/.local/share/qwen-omarchy-control/bin/qwen-voice-toggle.sh`
+  (comment-tagged `[qwen-omarchy-control]`), verified via `hyprctl binds -j`.
+
+## Desktop app (Linux)
+
+- Built from upstream source: `qwen-audio-agent-1.11.0-linux-x86_64.AppImage`
+  (had to add an `author` to `desktop/package.json` for electron-builder) ->
+  `~/Downloads/qwen-desktop/`. AppImage runtime verified (`--appimage-version`);
+  GUI first-run deferred until the realtime key is present.
+
+## Significant decisions
+
+- **Backend chosen: Hermes** (native ACP, `hermes acp`), reusing its existing
+  openrouter/deepseek model config; its native permission prompts remain active
+  (mode `native`). No duplicate coding-agent install.
+- **Fast path**: frontend MCP based local desktop tools (an officially supported
+  extension point), avoiding a coding-agent round-trip for every small command.
+- **Permission mode** `native` everywhere; `full` was not enabled (no strong
+  technical reason on this voice-input machine).
+
+## Pending user input / not done yet
+
+- DashScope API key (placeholder is in place; see the final report for where to paste).
+- First realtime voice call + acceptance tests + latency numbers.
+- Wake-word (Desktop app only) first enable.
