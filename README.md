@@ -93,14 +93,35 @@ backend involved), matching the level policy:
 - **Level 1 (immediate):** `get_active_window`, `list_windows`,
   `list_workspaces`, `get_monitors`, `switch_workspace`, `focus_window`,
   `launch_app`, `set_volume`, `volume_up`, `volume_down`, `mute_audio`,
-  `unmute_audio`, `get_audio_status`, `get_system_status`
+  `unmute_audio`, `get_audio_status`, `get_system_status`,
+  `read_window`, `read_screen`
 - **Level 2 (careful):** `move_active_window_to_workspace`,
-  `close_active_window`, `open_url`
+  `close_active_window`, `open_url`, `type_text`
 
 Level 3 operations (file deletion, package removal, sudo, shutdown, killing
 processes, sending messages, entering passwords, arbitrary shell) are **not**
 implemented on the voice path. They belong to the coding backend (Hermes),
 which keeps its own per-action permission prompts.
+
+## Controlling your applications and agents
+
+- **Drive any app/agent window**: say *"ask opencode to ..."*, *"use codex to
+  ..."*, *"tell chatgpt to ..."*, *"have hermes ..."* - the assistant focuses
+  that window, types your request, and presses Enter (`type_text`, window
+  aliases: opencode / coding agent / codex / chatgpt / hermes / terminal /
+  browser).
+- **Voice read-back**: say *"read it back"*, *"what did it say?"*, or just ask
+  what a window shows - the assistant OCRs the window (`read_window`/`read_screen`)
+  and summarizes it out loud.
+- **Find apps**: `launch_app` resolves installed desktop entries; a fix now
+  handles desktop files with duplicated keys (e.g. Google Chrome) that a strict
+  parser rejected.
+
+Limitations: OCR of terminal/TUI text is approximate (small/low-contrast text
+can garble). For clean results, prefer delegating to Hermes (its results return
+as text to the voice layer) or have the assistant drive a CLI agent headless.
+Driving a window requires that window to be open; a not-yet-open app can be
+launched first.
 
 ## Safety policy
 
