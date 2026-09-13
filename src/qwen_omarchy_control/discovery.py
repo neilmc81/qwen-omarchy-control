@@ -85,7 +85,9 @@ class App:
 
 
 def _read_desktop(path: Path) -> App | None:
-    parser = configparser.ConfigParser(interpolation=None)
+    # strict=False: .desktop files frequently repeat keys (e.g. two
+    # StartupWMClass lines in google-chrome.desktop); last one wins.
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
     try:
         parser.read(path, encoding="utf-8")
     except (configparser.Error, OSError):

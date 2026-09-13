@@ -51,6 +51,27 @@ def run(argv: list[str], timeout: float = TIMEOUT, env: dict | None = None) -> t
     return proc.returncode, out.strip()
 
 
+def run_bin(argv: list[str], timeout: float = TIMEOUT) -> tuple[int, bytes]:
+    """Run argv and return binary stdout (for grim/screenshots)."""
+    try:
+        proc = subprocess.run(argv, capture_output=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return 124, b"timed out"
+    except FileNotFoundError:
+        return 127, b"command not found"
+    return proc.returncode, proc.stdout
+
+
+def _ocr(png: bytes, psm: str = "3") -> tuple[int, str]:
+    """tesseract over PNG bytes."""
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
+        tmp.write(png)
+        tmp.flush()
+        return run(["tesseract", tmp.name, "-", "--psm", psm, "-l", "eng"], timeout=25.0)
+
+
 def hypr_env() -> dict | None:
     """Environment with HYPRLAND_INSTANCE_SIGNATURE resolved, or None.
 
@@ -108,9 +129,10 @@ FSENSITIVE_RE = re.compile(
 WINDOW_ALIASES = {
     "opencode": ("org.omarchy.agent", "oc |", "oc ", "opencode"),
     "coding agent": ("org.omarchy.agent", "oc |", "opencode"),
-    "codex": ("codex", "chatgpt"),
-    "terminal": ("org.omarchy.terminal", "ghostty", "foot", "alacritty", "kitty"),
+    "codex": ("codex",),
+    "chatgpt": ("chatgpt", "openai"),
     "hermes": ("hermes",),
+    "terminal": ("org.omarchy.terminal", "ghostty", "foot", "alacritty", "kitty"),
     "browser": ("google-chrome", "chromium", "firefox"),
     "file manager": ("org.gnome.Nautilus", "nautilus"),
 }
@@ -401,6 +423,71 @@ class DesktopController:
         except (OSError, subprocess.SubprocessError, IndexError):
             pass
         return status
+
+    # ------------------------------------------------------------ OCR read-back
+    OCR_LIMIT = 4000
+
+    def _window_geometry(self, win: dict) -> tuple[int, int, int, int] | None:
+        """(x, y, width, height) of a client, or None when not capturable."""
+        at, size = win.get("at"), win.get("size")
+        if not at or not size or len(at) < 2 or len(size) < 2:
+            return None
+        return int(at[0]), int(at[1]), int(size[0]), int(size[1])
+
+    def read_window(self, window: str | None = None) -> str:
+        """OCR a window (grim screenshot -> tesseract) and return its text.
+
+        This is how the assistant reads back what an app/agent produced (e.g.
+        the coding agent's answer) so it can summarize it out loud.
+        """
+        win = self._resolve_window(window) if window else (self._active() or None)
+        if win is None:
+            raise _fail("no window to read")
+        geo = self._window_geometry(win)
+        if geo is None:
+            raise _fail(f"cannot capture window geometry for {win.get('class')}")
+        x, y, w, h = geo
+        if w <= 0 or h <= 0:
+            raise _fail("window has zero size")
+        rc, png = run_bin(["grim", "-s", "0.75", "-g", f"{x},{y} {w}x{h}", "-"], timeout=15.0)
+        if rc != 0 or not png:
+            raise _fail("grim capture failed")
+        rc, out = _ocr(png)
+        if rc != 0:
+            raise _fail("tesseract OCR failed")
+        text = out.strip()
+        if not text:
+            return f"({win.get('class') or 'window'} shows no readable text)"
+        if len(text) > self.OCR_LIMIT:
+            text = text[: self.OCR_LIMIT] + " ..."
+        return text
+
+    def read_screen(self) -> str:
+        """OCR the whole focused monitor (for a broad answer)."""
+        mon = hyprctl_json("activewindow") or {}
+        data = hyprctl_json("monitors")
+        if not data:
+            raise _fail("no monitor to capture")
+        target = None
+        for m in data if isinstance(data, list) else []:
+            if m.get("focused"):
+                target = m
+                break
+        if target is None and isinstance(data, list) and data:
+            target = data[0]
+        if target is None:
+            raise _fail("no monitor to capture")
+        geo = (int(target["x"]), int(target["y"]),
+               int(target["width"]), int(target["height"]))
+        x, y, w, h = geo
+        rc, png = run_bin(["grim", "-s", "0.75", "-g", f"{x},{y} {w}x{h}", "-"], timeout=15.0)
+        if rc != 0 or not png:
+            raise _fail("grim capture failed")
+        rc, out = _ocr(png)
+        if rc != 0:
+            raise _fail("tesseract OCR failed")
+        text = out.strip()
+        return text[: self.OCR_LIMIT] + (" ..." if len(text) > self.OCR_LIMIT else "")
 
     # ----------------------------------------------------------- validation
     def _check_workspace(self, number: int) -> int:

@@ -62,6 +62,8 @@ def classify(operation: str) -> str:
         "unmute_audio",
         "get_audio_status",
         "get_system_status",
+        "read_window",
+        "read_screen",
     }:
         return "level1"
     if operation in {

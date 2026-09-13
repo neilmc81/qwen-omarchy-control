@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Launcher for the stdio MCP server used by the Qwen voice frontend.
-# Self-contained: rebuilds the minimal Wayland/Hyprland session env even when
-# spawned by a user service that inherits none of it.
+# Self-contained: rebuilds the minimal session env (HOME, XDG_RUNTIME_DIR,
+# Wayland/Hyprland) even when spawned by a user service that inherits none.
 ROOT="$(dirname "$(dirname "$(readlink -f "$0")")")"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+: "${HOME:=$(getent passwd "$(id -u)" | cut -d: -f6)}"
+export HOME
 : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
 export XDG_RUNTIME_DIR
 if [ -z "$HYPRLAND_INSTANCE_SIGNATURE" ] && [ -d "$XDG_RUNTIME_DIR/hypr" ]; then

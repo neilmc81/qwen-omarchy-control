@@ -119,6 +119,25 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "read_window",
+        "description": "OCR a window and return its on-screen text. Use this to read back what an "
+                       "application or agent produced (e.g. the coding agent's answer in its "
+                       "terminal) so you can summarize it for the user. Windows: 'opencode', "
+                       "'hermes', 'terminal', 'browser', or a class/title substring. Level 1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"window": {"type": "string",
+                                      "description": "Window to read (alias or substring); "
+                                                     "empty = the focused window."}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "read_screen",
+        "description": "OCR the whole focused monitor and return the text. Level 1.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "move_active_window_to_workspace",
         "description": "Move the focused window to workspace <number> (keep focus unless "
                        "<follow> is true). Level 2.",
@@ -269,6 +288,10 @@ class McpHandler:
             return ctrl.get_audio_status()
         if name == "get_system_status":
             return ctrl.get_system_status()
+        if name == "read_window":
+            return {"result": ctrl.read_window(str(args["window"]) if args.get("window") else None)}
+        if name == "read_screen":
+            return {"result": ctrl.read_screen()}
         if name == "move_active_window_to_workspace":
             return {"result": ctrl.move_active_window_to_workspace(
                 int(args["number"]), bool(args.get("follow", False)))}

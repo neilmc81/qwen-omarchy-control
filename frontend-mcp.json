@@ -27,6 +27,8 @@
         "unmute_audio": { "enabled": true, "description": "Unmute the computer's speakers." },
         "get_audio_status": { "enabled": true, "description": "Current volume and mute state." },
         "get_system_status": { "enabled": true, "description": "OS, kernel, hostname, uptime, memory, time." },
+        "read_window": { "enabled": true, "timeoutMs": 45000, "maxResultBytes": 65536, "description": "OCR a window and return its text - used to read back what an app/agent produced." },
+        "read_screen": { "enabled": true, "timeoutMs": 45000, "maxResultBytes": 65536, "description": "OCR the whole focused monitor." },
         "move_active_window_to_workspace": { "enabled": true, "description": "Move the focused window to a numbered workspace." },
         "close_active_window": { "enabled": true, "description": "Close the focused application window." },
         "open_url": { "enabled": true, "description": "Open an http(s) URL in the default browser." },
