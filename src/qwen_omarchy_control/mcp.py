@@ -81,19 +81,22 @@ TOOLS = [
     },
     {
         "name": "launch_agent",
-        "description": "Open a VISIBLE agent TUI window (hermes, codex, or opencode) with the "
-                       "spoken prompt already submitted, so the user can watch the agent work. "
-                       "Use this as the default way to run coding/build requests. "
-                       "Then use read_window on that agent window to summarize progress. Level 2.",
+        "description": "Open a VISIBLE agent TUI window (hermes, codex, or opencode) and let the "
+                       "user watch it work. Use WITH a prompt to run a coding/build request "
+                       "(prompt = the user's request). Use WITHOUT a prompt when the user just "
+                       "wants to OPEN the agent (e.g. 'open hermes', 'open the agent', "
+                       "'open default agent', 'open hermes tui') - that opens a fresh session "
+                       "and must NOT send any text to the agent. Level 2 (1 with no prompt).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "agent": {"type": "string",
                           "description": "'hermes' (default), 'codex' or 'opencode'."},
                 "prompt": {"type": "string",
-                           "description": "The user's request, as a clear instruction for the agent."},
+                           "description": "The user's request as a clear instruction. OMIT when "
+                                          "just opening the agent."},
             },
-            "required": ["prompt"],
+            "required": ["agent"],
             "additionalProperties": False,
         },
     },
@@ -295,7 +298,7 @@ class McpHandler:
             return {"result": ctrl.launch_app(str(args["name"]))}
         if name == "launch_agent":
             return {"result": ctrl.launch_agent(
-                str(args.get("agent") or "hermes"), str(args["prompt"]))}
+                str(args.get("agent") or "hermes"), str(args.get("prompt") or ""))}
         if name == "set_volume":
             return {"result": ctrl.set_volume(int(args["percent"]))}
         if name == "volume_up":

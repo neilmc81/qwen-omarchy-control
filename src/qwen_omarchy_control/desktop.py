@@ -144,11 +144,14 @@ WINDOW_ALIASES = {
 AGENT_LAUNCHERS = {
     "hermes": lambda p: ["foot", "-H", "--app-id=qwen-hermes", "-T", "Hermes Agent",
                          "env", "-u", "HERMES_SESSION_SOURCE",
-                         "hermes", "chat", "--yolo", "--tui", f"--query={p}"],
+                         *(["hermes", "chat", "--yolo", "--tui", f"--query={p}"]
+                           if p else ["hermes", "--yolo"])],
     "codex": lambda p: ["foot", "-H", "--app-id=qwen-codex", "-T", "Codex",
-                        "codex", "--approve-for-me", "--", p],
+                        *(["codex", "--approve-for-me", "--", p]
+                          if p else ["codex", "--approve-for-me"])],
     "opencode": lambda p: ["foot", "-H", "--app-id=qwen-opencode", "-T", "OpenCode",
-                           "opencode", "--auto", "--prompt", p],
+                           *(["opencode", "--auto", "--prompt", p]
+                             if p else ["opencode", "--auto"])],
 }
 
 
@@ -332,22 +335,23 @@ class DesktopController:
             raise _fail(f"failed to launch {name!r}: " + (out or "unknown error"))
         return f"launched {name}"
 
-    def launch_agent(self, agent: str, prompt: str) -> str:
-        """Open a VISIBLE agent TUI window pre-seeded with `prompt`.
+    def launch_agent(self, agent: str, prompt: str = "") -> str:
+        """Open a VISIBLE agent TUI window.
 
-        This is the coding-task path: the user watches the agent work instead of
-        a headless backend. Level 2 - it submits work to an agent.
+        With a prompt: the agent TUI opens pre-seeded with the task, so the
+        user watches it work (the coding-task path). With an empty prompt: a
+        fresh interactive session opens (e.g. "open hermes tui"). All agent
+        launches mirror Omarchy's per-agent default flags (--yolo / --auto).
+        Level 2 - with a prompt it submits work to an agent.
         """
         key = (agent or "").strip().lower()
         launcher = AGENT_LAUNCHERS.get(key)
         if launcher is None:
             raise _fail(f"unknown agent {agent!r}; use hermes, codex or opencode")
         prompt = (prompt or "").strip()
-        if not prompt:
-            raise _fail("launch_agent needs a prompt")
         if len(prompt) > 800:
             raise _fail("prompt too long")
-        if reject_sensitive_text(prompt):
+        if prompt and reject_sensitive_text(prompt):
             raise _fail("refused: prompt looks sensitive; agents never handle "
                         "passwords/secrets from the voice channel")
         argv = launcher(prompt)
@@ -358,7 +362,9 @@ class DesktopController:
                              start_new_session=True)
         except FileNotFoundError:
             raise _fail(f"command not found: {argv[0]}")
-        return f"opened {key} in a window with your request"
+        if prompt:
+            return f"opened {key} in a window with your request"
+        return f"opened {key} in a fresh window"
 
     def open_url(self, url: str) -> str:
         parsed = urllib.parse.urlparse(url.strip())

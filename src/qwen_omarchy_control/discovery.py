@@ -26,13 +26,16 @@ from pathlib import Path
 
 Home = Path.home()
 
-# Spoken agent names -> a VISIBLE terminal TUI window. foot sets the Wayland
-# app-id so the assistant can focus/type into it; this replaces any headless
-# coding backend for these agents.
+# Spoken agent names -> a VISIBLE terminal TUI window (plain open, no prompt).
+# foot sets the Wayland app-id so the assistant can focus/type into it. Flags
+# mirror Omarchy's per-agent default-agent launch (hermes --yolo, etc.).
 AGENT_TUIS = {
-    "hermes": ["foot", "--app-id=qwen-hermes", "-T", "Hermes Agent", "hermes"],
-    "codex": ["foot", "--app-id=qwen-codex", "-T", "Codex", "codex"],
-    "opencode": ["foot", "--app-id=qwen-opencode", "-T", "OpenCode", "opencode"],
+    "hermes": ["foot", "-H", "--app-id=qwen-hermes", "-T", "Hermes Agent",
+               "env", "-u", "HERMES_SESSION_SOURCE", "hermes", "--yolo"],
+    "codex": ["foot", "-H", "--app-id=qwen-codex", "-T", "Codex",
+              "codex", "--approve-for-me"],
+    "opencode": ["foot", "-H", "--app-id=qwen-opencode", "-T", "OpenCode",
+                 "opencode", "--auto"],
 }
 
 APP_DIRS = [

@@ -121,6 +121,17 @@ class ControllerTest(unittest.TestCase):
         with self.assertRaises(DesktopError):
             self.ctrl.launch_agent("hermes", "delete with my password 1234")
 
+    def test_launch_agent_empty_prompt_opens_fresh_no_query(self):
+        with mock.patch("subprocess.Popen") as popen:
+            popen.return_value = mock.Mock(pid=43)
+            self.ctrl.launch_agent("hermes", "")
+        argv = popen.call_args.args[0]
+        # fresh open = hermes --yolo, NO --query, NO chat subcommand
+        self.assertIn("hermes", argv)
+        self.assertIn("--yolo", argv)
+        self.assertNotIn("--query=", [a for a in argv if a.startswith("--query=")])
+        self.assertNotIn("chat", argv)
+
     def test_set_volume_limits(self):
         with self.assertRaises(DesktopError):
             self.ctrl.set_volume(-1)
