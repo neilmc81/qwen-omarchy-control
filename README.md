@@ -65,6 +65,18 @@ Backups of configs before edits:
 - `~/.config/hypr/bindings.lua.bak-qwen-<timestamp>`
 - `~/.config/qwaudio/config.env.bak-*`
 
+## Bar indicator
+
+A mic icon sits in the top bar right after the weather widget
+(`~/.config/omarchy/plugins/qwen.voice/`, slot `qwen.voice` in `shell.json`):
+- **Green** mic = listening; **dark** mic = muted/stopped.
+- Click it to toggle the microphone (same as the hotkey).
+- State comes from `$XDG_RUNTIME_DIR/qwen-voice/state.json`, written by the
+  toggle script on every transition and watched live by the widget.
+- Source of the plugin is mirrored in this repo under `bar-widget/`.
+- Remove the `qwen.voice` entry from `~/.config/omarchy/shell.json` and delete
+  `~/.config/omarchy/plugins/qwen.voice/` to revert.
+
 ## Language and reply length
 
 Set in `~/.config/qwaudio/USER.md` (the gateway's user-preference file):
