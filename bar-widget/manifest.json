@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "qwen.voice",
+  "name": "Qwen Voice",
+  "version": "0.1.0",
+  "author": "qwen-omarchy-control",
+  "description": "Shows whether the Qwen voice assistant is listening (green) or muted/stopped (dark). Click toggles the microphone.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "VoiceIndicator.qml"
+  },
+  "barWidget": {
+    "displayName": "Qwen Voice",
+    "description": "Listening state for the Qwen voice assistant",
+    "category": "Audio",
+    "allowMultiple": false
+  }
+}
