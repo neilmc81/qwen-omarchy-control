@@ -137,16 +137,18 @@ WINDOW_ALIASES = {
     "file manager": ("org.gnome.Nautilus", "nautilus"),
 }
 
-# Visible agent windows: open the agent's TUI pre-seeded with a spoken prompt.
-# `hermes chat -q` seeds the interactive TUI on a real TTY; codex/opencode take
-# a positional prompt. foot sets the Wayland app-id and -H keeps the window open
-# after the agent finishes so the result stays visible and readable.
+# Visible agent windows: open the agent's TUI pre-seeded with a spoken prompt,
+# mirroring Omarchy's own per-agent default-agent flags (omarchy-agent script):
+# hermes --yolo, codex --approve-for-me, opencode --auto. foot sets the Wayland
+# app-id and -H keeps the window open after the agent finishes.
 AGENT_LAUNCHERS = {
     "hermes": lambda p: ["foot", "-H", "--app-id=qwen-hermes", "-T", "Hermes Agent",
-                         "hermes", "chat", "-q", p],
-    "codex": lambda p: ["foot", "-H", "--app-id=qwen-codex", "-T", "Codex", "codex", p],
+                         "env", "-u", "HERMES_SESSION_SOURCE",
+                         "hermes", "chat", "--yolo", "--tui", f"--query={p}"],
+    "codex": lambda p: ["foot", "-H", "--app-id=qwen-codex", "-T", "Codex",
+                        "codex", "--approve-for-me", "--", p],
     "opencode": lambda p: ["foot", "-H", "--app-id=qwen-opencode", "-T", "OpenCode",
-                           "opencode", p],
+                           "opencode", "--auto", "--prompt", p],
 }
 
 

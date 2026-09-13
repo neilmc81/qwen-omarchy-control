@@ -109,10 +109,11 @@ class ControllerTest(unittest.TestCase):
         argv = popen.call_args.args[0]
         self.assertEqual(argv[0], "foot")
         self.assertIn("--app-id=qwen-hermes", argv)
-        self.assertIn("hermes", argv)
-        self.assertIn("chat", argv)
-        self.assertIn("-q", argv)
-        self.assertTrue(argv[-1].endswith("build a todo app"))
+        self.assertIn("-H", argv)
+        # Omarchy's hermes default-agent flags: chat --yolo --tui --query=...
+        self.assertIn("--yolo", argv)
+        self.assertIn("--tui", argv)
+        self.assertTrue(any(a.startswith("--query=") and "build a todo app" in a for a in argv))
 
     def test_launch_agent_rejects_unknown_and_sensitive(self):
         with self.assertRaises(DesktopError):
