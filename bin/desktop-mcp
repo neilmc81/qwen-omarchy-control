@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Launcher for the stdio MCP server used by the Qwen voice frontend.
+# Self-contained: rebuilds the minimal Wayland/Hyprland session env even when
+# spawned by a user service that inherits none of it.
+ROOT="$(dirname "$(dirname "$(readlink -f "$0")")")"
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+: "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+export XDG_RUNTIME_DIR
+if [ -z "$HYPRLAND_INSTANCE_SIGNATURE" ] && [ -d "$XDG_RUNTIME_DIR/hypr" ]; then
+  for d in "$XDG_RUNTIME_DIR"/hypr/*/; do
+    if [ -S "${d}.socket.sock" ] || [ -S "${d}.socket2.sock" ]; then
+      export HYPRLAND_INSTANCE_SIGNATURE="$(basename "$d")"
+      break
+    fi
+  done
+fi
+if [ -z "$WAYLAND_DISPLAY" ]; then
+  sock=$(compgen -G "$XDG_RUNTIME_DIR/wayland-*" | head -n1)
+  [ -n "$sock" ] && export WAYLAND_DISPLAY="$(basename "$sock")"
+fi
+[ -z "$DISPLAY" ] && [ -S /tmp/.X11-unix/X0 ] && export DISPLAY=:0
+exec "${QWEN_OMARCHY_CONTROL_PY:-python3}" -m qwen_omarchy_control mcp "$@"

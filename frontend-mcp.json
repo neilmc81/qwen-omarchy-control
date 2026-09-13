@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "servers": {
+    "qwen_omarchy_control": {
+      "enabled": true,
+      "transport": {
+        "type": "stdio",
+        "command": "/home/neil/.local/share/qwen-omarchy-control/bin/desktop-mcp",
+        "args": [],
+        "env": {
+          "PYTHONPATH": "/home/neil/.local/share/qwen-omarchy-control/src"
+        },
+        "cwd": "/home/neil/.local/share/qwen-omarchy-control"
+      },
+      "tools": {
+        "get_active_window": { "enabled": true, "description": "That focused window." },
+        "list_windows": { "enabled": true, "description": "All open windows with their class, title and workspace." },
+        "list_workspaces": { "enabled": true, "description": "All workspaces, their monitor and window counts." },
+        "get_monitors": { "enabled": true, "description": "Connected displays." },
+        "switch_workspace": { "enabled": true, "description": "Switch to a numbered workspace (1-100)." },
+        "focus_window": { "enabled": true, "description": "Focus a window by its class or title." },
+        "launch_app": { "enabled": true, "description": "Launch an installed application; also 'terminal', 'browser', 'files', 'editor'." },
+        "set_volume": { "enabled": true, "description": "Set speaker volume to a percent (0-100)." },
+        "volume_up": { "enabled": true, "description": "Raise speaker volume one step." },
+        "volume_down": { "enabled": true, "description": "Lower speaker volume one step." },
+        "mute_audio": { "enabled": true, "description": "Mute the computer's speakers." },
+        "unmute_audio": { "enabled": true, "description": "Unmute the computer's speakers." },
+        "get_audio_status": { "enabled": true, "description": "Current volume and mute state." },
+        "get_system_status": { "enabled": true, "description": "OS, kernel, hostname, uptime, memory, time." },
+        "move_active_window_to_workspace": { "enabled": true, "description": "Move the focused window to a numbered workspace." },
+        "close_active_window": { "enabled": true, "description": "Close the focused application window." },
+        "open_url": { "enabled": true, "description": "Open an http(s) URL in the default browser." }
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+# No secrets belong in this repository.
+.env
+*.env
+!*.env.example
+config.env*
+identity.env
+*secret*
+
+# Python
+__pycache__/
+*.pyc
+
+# Packaging / tooling
+.venv/
+venv/
+node_modules/
+
+# Editor
+.vscode/
+.idea/
+*.swp

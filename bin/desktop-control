@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Launcher for the qwen-omarchy-control CLI (stdlib only, no venv needed).
+export PYTHONPATH="$(dirname "$(dirname "$(readlink -f "$0")")")/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "${QWEN_OMARCHY_CONTROL_PY:-python3}" -m qwen_omarchy_control "$@"
