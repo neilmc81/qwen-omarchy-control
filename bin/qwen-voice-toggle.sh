@@ -29,10 +29,15 @@ for c in json.load(sys.stdin):
 
 if [ -z "$addr" ]; then
   exec setsid foot --app-id=qwen-voice -T "Qwen Voice" qwenaudio tui >/dev/null 2>&1 &
-  TUI_PID=$!
   notify-send -a qwen-voice "Qwen Voice" "Opened Qwen TUI; press again to mute" 2>/dev/null &
   exit 0
 fi
+
+# Hyprland needs the address: prefix; a bare hex value is never found.
+case "$addr" in
+  address:*) : ;;
+  *) addr="address:$addr" ;;
+esac
 
 # Focus the TUI and press 'm' to toggle the mic.
 hyprctl dispatch "hl.dsp.focus({ window = \"$addr\" })" >/dev/null 2>&1

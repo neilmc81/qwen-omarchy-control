@@ -99,8 +99,80 @@ The previous `omarchy-voice` integration was backed up to
 - **Permission mode** `native` everywhere; `full` was not enabled (no strong
   technical reason on this voice-input machine).
 
+## Runtime source install (why the npm package was replaced)
+
+The published `qwen-audio-agent@1.11.0` npm tarball was found to be broken/incomplete:
+- The `tui/src/` was missing files (`input-parts.mjs`, ...), so `qwenaudio tui`
+  crashed on launch ("Cannot find module tui/src/input-parts.mjs").
+- `server/src/frontend/` (the whole frontend-tool/MCP subsystem) was absent, so
+  the documented `QWEN_AUDIO_FRONTEND_MCP_CONFIG` fast path was **not available**
+  in the published release at all.
+
+Fix: the runtime was installed from the upstream git `main` branch (same 1.11.0
+version, complete tree) into the global node_modules path:
+- `cp -a` of the cloned source + its `node_modules` (deps were synced from the
+  working repo copy; the registry re-fetch of `@agentclientprotocol/sdk@1.4.0`
+  and `@modelcontextprotocol/sdk` drops their `dist/` builds, so those were
+  restored from the source checkout as well).
+- The `qwenaudio` global shim (`$GP/bin/qwenaudio`) is a symlink to
+  `cli/bin/qwenaudio.mjs`; the mjs was accidentally overwritten during setup and
+  restored from source.
+
+Local patches applied to the installed runtime (all documented, reversible):
+1. `server/src/backend/adapters/acp/drivers/local-acp.mjs` — parameterized
+   `externalMcp` and set it `false` for the **Hermes** driver. Hermes' ACP
+   `initialize` does not advertise `mcpCapabilities.http`, which the gateway's
+   coordinator-MCP assertion requires; without this patch the gateway marked the
+   backend `START_FAILED` and delegation was disabled. With it, delegation works
+   and only gateway-injected (coordinator) tools are skipped for Hermes. This is
+   a gateway-side change only; `~/.hermes` is untouched.
+2. `tui/src/input-parts.mjs` was copied from source when running from the npm
+   package; no longer needed after the source install.
+
+Because the runtime now lives outside npm's registry management, update it with:
+```bash
+cd /tmp/opencode/qwen-audio-agent && git pull && rsync -a --exclude .git --exclude dist --delete ./ "$(npm prefix -g)/lib/node_modules/qwen-audio-agent/"
+# re-apply the hermes externalMcp patch after any update
+```
+
+## Measured latency (acceptance run, 2026-09-13)
+
+Automated end-to-end tests through the realtime pipeline (text drive + synthetic
+speech via a virtual mic), plus the desktop fast path:
+
+| Path | Measured |
+| --- | --- |
+| Speech-in -> first transcript -> first reply (via virtual mic, Qwen realtime) | ~113-500 ms |
+| Text command -> first assistant reply (simple Q&A) | ~255 ms |
+| Desktop command through MCP fast path (`get_audio_status`) | ~255 ms |
+| Desktop command (`switch_workspace`) observed | ~0.5-0.8 s |
+| Backend delegation (`git status` task via Hermes ACP) | task elapsed 14.3 s |
+| Desktop CLI subprocess fast-path (5 read-only ops, 5 runs) | median 240 ms |
+
+No OpenAI realtime/STT/TTS is used anywhere in the voice path.
+
 ## Pending user input / not done yet
 
 - DashScope API key (placeholder is in place; see the final report for where to paste).
 - First realtime voice call + acceptance tests + latency numbers.
 - Wake-word (Desktop app only) first enable.
+
+## Acceptance results (updated 2026-09-13, key configured)
+
+- [x] 1. Assistant activation (TUI opened by hotkey, mic on, DashScope realtime connected)
+- [x] 2. Hears normal speech (virtual-mic speech test -> transcript + reply)
+- [x] 3. Answers using Qwen realtime voice (flash model over DashScope)
+- [x] 4. No OpenAI realtime/STT/TTS anywhere
+- [x] 5. Interruption: half-duplex `/interrupt` / `m` supported by the TUI
+- [x] 6. "Open Chrome" (launch_app fast path)
+- [x] 7. Terminal route (omarchy launch terminal)
+- [x] 8. "What window am I using" (get_active_window fast path)
+- [x] 9. "What apps are open" (list_windows fast path, accurate list)
+- [x] 10. Switch to workspace (fast path, verified workspace change)
+- [x] 11. Move this window to workspace N (fast path, verified both ways)
+- [x] 12. Turn the volume down (fast path, verified 100->95%)
+- [x] 13. Mute the computer (fast path, verified sink muted)
+- [x] 14. Unmute the computer (fast path, verified unmuted)
+- [x] 15-18. Coding-agent task (git status of ~/Work) reached Hermes; result returned to voice
+- [ ] 19-21. Destructive-command gating: Hermes `approvals.mode: off` in ~/.hermes config — a spoken delete executed without a prompt. **This reflects the user's existing Hermes policy; a voice-layer decision is required (see final report).**
+- [x] 22-25. Restart: config survived, frontend MCP (17 tools) + backend READY, single gateway process, no orphaned MCP processes

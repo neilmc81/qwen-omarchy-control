@@ -153,7 +153,24 @@ Nothing in the uninstall touches `~/.hermes`, `~/.codex`, or the Hermes gateway.
 
 ## Measured latency
 
-Filled in from the acceptance run; see `INSTALL_LOG.md`.
+Automated acceptance run, 2026-09-13 (see INSTALL_LOG.md for the full table):
+
+| Path | Perceived latency |
+| --- | --- |
+| Simple voice answer (realtime STT + reply) | ~113-500 ms to first reply |
+| Desktop command via MCP fast path | ~255-800 ms |
+| Complex task via Hermes delegation | task elapsed ~14 s (plus a ~2 s "starting" ack) |
+
+## Safety note (read this)
+
+Hermes (the delegated coding backend) is configured with `approvals.mode: off`
+in `~/.hermes/config.yaml`. This is your existing coder's policy: it does not
+prompt before destructive actions. The voice layer inherits that — a spoken
+"delete the file ..." will be executed by Hermes without a prompt. If you want
+the voice assistant to ask before destructive actions, set
+`approvals.mode: manual|smart` in that file (Hermes then requests permission,
+and the gateway surfaces it as a confirmation you must answer). Decide before
+using voice for anything destructive.
 
 ## Files generated / modified during setup
 
