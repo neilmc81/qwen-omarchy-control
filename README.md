@@ -50,14 +50,31 @@ qwenaudio tui
 
 ## Hotkey
 
-`SUPER + SHIFT + V` opens/focuses the Qwen TUI and toggles the microphone
-(push-to-talk / toggle listening). Defined in `~/.config/hypr/bindings.lua`
-under a clearly commented block `[qwen-omarchy-control]`. Revert by deleting
-that block.
+`SUPER + SHIFT + V` = **push-to-talk, no window**. The Qwen TUI runs hidden in a
+detached tmux session (`qwen-voice`), starting muted; each press toggles the
+microphone (`/m`), and a desktop notification reports the state. Replies are
+spoken through the speakers; nothing pops up on screen.
+
+- To see the TUI: `tmux attach -t qwen-voice` (leave with `Ctrl-b d`).
+- To stop the hidden TUI: `tmux kill-session -t qwen-voice`.
+
+Defined in `~/.config/hypr/bindings.lua` under a clearly commented block
+`[qwen-omarchy-control]`. Revert by deleting that block.
 
 Backups of configs before edits:
 - `~/.config/hypr/bindings.lua.bak-qwen-<timestamp>`
 - `~/.config/qwaudio/config.env.bak-*`
+
+## Language and reply length
+
+Set in `~/.config/qwaudio/USER.md` (the gateway's user-preference file):
+- replies are always in English (never Chinese unless you ask in Chinese);
+- ordinary answers are 1-2 short sentences; lead with the conclusion;
+- when unsure, one short "I'm not sure" + at most one brief clarifying question,
+  then stop; no rambling or guessing;
+- after a desktop action, confirm in one sentence.
+
+These apply to new voice sessions (restart the gateway service to reapply).
 
 ## Wake word
 
