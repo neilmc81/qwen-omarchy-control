@@ -102,6 +102,24 @@ class ControllerTest(unittest.TestCase):
         with self.assertRaises(DesktopError):
             self.ctrl.type_text("terminal", "my password is hunter2")
 
+    def test_launch_agent_builds_visible_hermes_argv(self):
+        with mock.patch("subprocess.Popen") as popen:
+            popen.return_value = mock.Mock(pid=42)
+            self.ctrl.launch_agent("hermes", "build a todo app")
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[0], "foot")
+        self.assertIn("--app-id=qwen-hermes", argv)
+        self.assertIn("hermes", argv)
+        self.assertIn("chat", argv)
+        self.assertIn("-q", argv)
+        self.assertTrue(argv[-1].endswith("build a todo app"))
+
+    def test_launch_agent_rejects_unknown_and_sensitive(self):
+        with self.assertRaises(DesktopError):
+            self.ctrl.launch_agent("bogus", "hi")
+        with self.assertRaises(DesktopError):
+            self.ctrl.launch_agent("hermes", "delete with my password 1234")
+
     def test_set_volume_limits(self):
         with self.assertRaises(DesktopError):
             self.ctrl.set_volume(-1)

@@ -69,12 +69,31 @@ TOOLS = [
     {
         "name": "launch_app",
         "description": "Launch an installed application by name. Also understands 'terminal', "
-                       "'browser', 'files', 'editor'. Examples: 'chrome', 'spotify', 'terminal'. "
-                       "Level 1.",
+                       "'browser', 'files', 'editor', and the agent names 'hermes', 'codex', "
+                       "'opencode' (opens that agent's TUI in a terminal window). "
+                       "Examples: 'chrome', 'spotify', 'terminal'. Level 1.",
         "inputSchema": {
             "type": "object",
             "properties": {"name": {"type": "string"}},
             "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "launch_agent",
+        "description": "Open a VISIBLE agent TUI window (hermes, codex, or opencode) with the "
+                       "spoken prompt already submitted, so the user can watch the agent work. "
+                       "Use this as the default way to run coding/build requests. "
+                       "Then use read_window on that agent window to summarize progress. Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent": {"type": "string",
+                          "description": "'hermes' (default), 'codex' or 'opencode'."},
+                "prompt": {"type": "string",
+                           "description": "The user's request, as a clear instruction for the agent."},
+            },
+            "required": ["prompt"],
             "additionalProperties": False,
         },
     },
@@ -274,6 +293,9 @@ class McpHandler:
             return ctrl.focus_window(str(args["app_or_title"]))
         if name == "launch_app":
             return {"result": ctrl.launch_app(str(args["name"]))}
+        if name == "launch_agent":
+            return {"result": ctrl.launch_agent(
+                str(args.get("agent") or "hermes"), str(args["prompt"]))}
         if name == "set_volume":
             return {"result": ctrl.set_volume(int(args["percent"]))}
         if name == "volume_up":

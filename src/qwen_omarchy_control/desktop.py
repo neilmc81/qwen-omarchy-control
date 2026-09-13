@@ -127,14 +127,26 @@ FSENSITIVE_RE = re.compile(
 # Spoken names -> window match terms. "opencode"/"coding agent" matches the
 # omarchy-launched agent terminal (class org.omarchy.agent, title "OC | ...").
 WINDOW_ALIASES = {
-    "opencode": ("org.omarchy.agent", "oc |", "oc ", "opencode"),
-    "coding agent": ("org.omarchy.agent", "oc |", "opencode"),
-    "codex": ("codex",),
+    "opencode": ("qwen-opencode", "org.omarchy.agent", "oc |", "oc ", "opencode"),
+    "coding agent": ("qwen-hermes", "qwen-opencode", "org.omarchy.agent", "oc |", "opencode"),
+    "codex": ("qwen-codex", "codex"),
     "chatgpt": ("chatgpt", "openai"),
-    "hermes": ("hermes",),
+    "hermes": ("qwen-hermes", "hermes"),
     "terminal": ("org.omarchy.terminal", "ghostty", "foot", "alacritty", "kitty"),
     "browser": ("google-chrome", "chromium", "firefox"),
     "file manager": ("org.gnome.Nautilus", "nautilus"),
+}
+
+# Visible agent windows: open the agent's TUI pre-seeded with a spoken prompt.
+# `hermes chat -q` seeds the interactive TUI on a real TTY; codex/opencode take
+# a positional prompt. foot sets the Wayland app-id and -H keeps the window open
+# after the agent finishes so the result stays visible and readable.
+AGENT_LAUNCHERS = {
+    "hermes": lambda p: ["foot", "-H", "--app-id=qwen-hermes", "-T", "Hermes Agent",
+                         "hermes", "chat", "-q", p],
+    "codex": lambda p: ["foot", "-H", "--app-id=qwen-codex", "-T", "Codex", "codex", p],
+    "opencode": lambda p: ["foot", "-H", "--app-id=qwen-opencode", "-T", "OpenCode",
+                           "opencode", p],
 }
 
 
@@ -303,10 +315,48 @@ class DesktopController:
                 f"no installed application matches {name!r}. Name an installed "
                 "desktop entry, or say 'terminal', 'browser', or 'files'."
             )
+        if argv[0] in ("foot", "ghostty", "alacritty", "kitty", "wezterm"):
+            # Long-running terminal TUI (agent window): start detached, don't wait.
+            try:
+                subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL,
+                                 stdin=subprocess.DEVNULL,
+                                 start_new_session=True)
+            except FileNotFoundError:
+                raise _fail(f"command not found: {argv[0]}")
+            return f"launched {name} in a terminal window"
         rc, out = run(argv, timeout=15.0)
         if rc != 0:
             raise _fail(f"failed to launch {name!r}: " + (out or "unknown error"))
         return f"launched {name}"
+
+    def launch_agent(self, agent: str, prompt: str) -> str:
+        """Open a VISIBLE agent TUI window pre-seeded with `prompt`.
+
+        This is the coding-task path: the user watches the agent work instead of
+        a headless backend. Level 2 - it submits work to an agent.
+        """
+        key = (agent or "").strip().lower()
+        launcher = AGENT_LAUNCHERS.get(key)
+        if launcher is None:
+            raise _fail(f"unknown agent {agent!r}; use hermes, codex or opencode")
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise _fail("launch_agent needs a prompt")
+        if len(prompt) > 800:
+            raise _fail("prompt too long")
+        if reject_sensitive_text(prompt):
+            raise _fail("refused: prompt looks sensitive; agents never handle "
+                        "passwords/secrets from the voice channel")
+        argv = launcher(prompt)
+        try:
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL,
+                             start_new_session=True)
+        except FileNotFoundError:
+            raise _fail(f"command not found: {argv[0]}")
+        return f"opened {key} in a window with your request"
 
     def open_url(self, url: str) -> str:
         parsed = urllib.parse.urlparse(url.strip())

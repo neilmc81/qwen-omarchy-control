@@ -71,6 +71,7 @@ def classify(operation: str) -> str:
         "close_active_window",
         "open_url",
         "type_text",
+        "launch_agent",
     }:
         return "level2"
     if operation in {"delete_file", "overwrite_file", "run_shell",

@@ -26,6 +26,15 @@ from pathlib import Path
 
 Home = Path.home()
 
+# Spoken agent names -> a VISIBLE terminal TUI window. foot sets the Wayland
+# app-id so the assistant can focus/type into it; this replaces any headless
+# coding backend for these agents.
+AGENT_TUIS = {
+    "hermes": ["foot", "--app-id=qwen-hermes", "-T", "Hermes Agent", "hermes"],
+    "codex": ["foot", "--app-id=qwen-codex", "-T", "Codex", "codex"],
+    "opencode": ["foot", "--app-id=qwen-opencode", "-T", "OpenCode", "opencode"],
+}
+
 APP_DIRS = [
     Path(os.environ.get("XDG_DATA_HOME", Home / ".local/share")) / "applications",
     Home / ".local/share/applications",
@@ -213,7 +222,11 @@ def launch_argv(app: App) -> list[str]:
 def launch_argv_for(name: str) -> list[str] | None:
     """Best-effort argv for a spoken name. None when unresolvable.
 
-    Prefers omarchy routes, then desktop discovery."""
+    Prefers a visible agent TUI (hermes/codex/opencode), then omarchy routes,
+    then desktop discovery."""
+    agent = AGENT_TUIS.get((name or "").strip().lower())
+    if agent:
+        return list(agent)
     argv = resolve_route(name)
     if argv:
         return argv
