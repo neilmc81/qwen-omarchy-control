@@ -141,6 +141,61 @@ class ControllerTest(unittest.TestCase):
         argv = desktop.run.call_args.args[0]
         self.assertEqual(argv[-1], "50%")
 
+    def test_pointer_move_builds_dispatch(self):
+        desktop.run.return_value = (0, "10, 20")
+        self.ctrl.pointer_move(300, 400)
+        argv = desktop.run.call_args.args[0]
+        self.assertEqual(argv, ["hyprctl", "dispatch",
+                                'hl.dsp.cursor.move({ x = "300", y = "400" })'])
+
+    def test_pointer_move_relative_offsets(self):
+        desktop.run.return_value = (0, "10, 20")
+        self.ctrl.pointer_move(5, -2, relative=True)
+        argv = desktop.run.call_args.args[0]
+        self.assertIn('x = "15"', argv[2])
+        self.assertIn('y = "18"', argv[2])
+
+    def test_mouse_click_without_daemon_errors(self):
+        with mock.patch.object(desktop.Path, "exists", return_value=False):
+            with self.assertRaises(DesktopError):
+                self.ctrl.mouse_click()
+            with self.assertRaises(DesktopError):
+                self.ctrl.mouse_scroll("down")
+
+    def test_mouse_click_builds_argv(self):
+        with mock.patch.object(desktop.Path, "exists", return_value=True):
+            self.ctrl.mouse_click("right", double=True)
+            argv = desktop.run.call_args.args[0]
+            self.assertEqual(argv, ["ydotool", "click", "--repeat", "2", "0xC1"])
+
+    def test_mouse_scroll_points_then_wheels(self):
+        self.fake.active = {"address": "0xbbb", "class": "org.omarchy.terminal",
+                            "at": [0, 0], "size": [800, 600]}
+        with mock.patch.object(desktop.Path, "exists", return_value=True), \
+             mock.patch.object(desktop, "_dispatch") as dispatch:
+            desktop.run.side_effect = [(0, "ok"), (0, "ok")]
+            self.ctrl.mouse_scroll("up", pages=1)
+        # First a pointer move to the active window centre...
+        self.assertIn("cursor.move", dispatch.call_args.args[0])
+        self.assertIn('x = "400"', dispatch.call_args.args[0])
+        # ...then the wheel call.
+        argv = desktop.run.call_args.args[0]
+        self.assertEqual(argv[:3], ["ydotool", "mousemove", "--wheel"])
+        self.assertEqual(argv[3], "-y")
+        self.assertTrue(int(argv[4]) > 0)  # "up" is a positive wheel delta
+
+    def test_describe_close_names_active_window(self):
+        desc = self.ctrl.describe("close_active_window")
+        self.assertIn("close", desc)
+        self.assertIn("org.omarchy.terminal", desc)
+
+    def test_describe_volume_and_move(self):
+        self.assertEqual(self.ctrl.describe("set_volume", percent=42),
+                         "set the volume to 42%")
+        desc = self.ctrl.describe("move_active_window_to_workspace", number=3)
+        self.assertIn("workspace 3", desc)
+        self.assertIn("org.omarchy.terminal", desc)
+
 
 if __name__ == "__main__":
     unittest.main()

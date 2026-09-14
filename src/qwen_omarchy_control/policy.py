@@ -64,6 +64,7 @@ def classify(operation: str) -> str:
         "get_system_status",
         "read_window",
         "read_screen",
+        "pointer_move",
     }:
         return "level1"
     if operation in {
@@ -72,6 +73,8 @@ def classify(operation: str) -> str:
         "open_url",
         "type_text",
         "launch_agent",
+        "mouse_click",
+        "mouse_scroll",
     }:
         return "level2"
     if operation in {"delete_file", "overwrite_file", "run_shell",

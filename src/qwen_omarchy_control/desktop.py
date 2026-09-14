@@ -124,6 +124,29 @@ FSENSITIVE_RE = re.compile(
     r"(password|passwd|ssn|credit|card|bank|token|secret|pin|otp)", re.I
 )
 
+# Mouse control. The compositor moves the pointer (hl.dsp.cursor.move); clicks
+# and the wheel come from the ydotool daemon (uinput), which Hyprland does not
+# expose through its dispatcher. Wheel distances are the application's numbers,
+# not the compositor's: one notch is ~40 px in Chromium and most GTK apps.
+SCROLL_PIXELS_PER_CLICK = 40
+SCROLL_PAGE_OVERLAP = 0.85
+SCROLL_MIN_CLICKS, SCROLL_MAX_CLICKS = 4, 30
+SCROLL_SIGN = {"down": -1, "up": 1, "right": 1, "left": -1}
+# ydotool button codes: 0xC0 is press+release, +1 right, +2 middle.
+YDOTOOL_BUTTONS = {"left": "0xC0", "right": "0xC1", "middle": "0xC2"}
+YDOTOOL_UNAVAILABLE = (
+    "mouse control needs the ydotool daemon, which is not running. Start it "
+    "with: systemctl --user enable --now ydotool.service"
+)
+
+
+def _scroll_clicks(height: int, pages: int) -> int:
+    """Wheel notches for `pages` screenfuls of a window `height` px tall."""
+    per_page = round(height * SCROLL_PAGE_OVERLAP / SCROLL_PIXELS_PER_CLICK)
+    per_page = max(SCROLL_MIN_CLICKS, min(per_page, SCROLL_MAX_CLICKS))
+    return per_page * pages
+
+
 # Spoken names -> window match terms. "opencode"/"coding agent" matches the
 # omarchy-launched agent terminal (class org.omarchy.agent, title "OC | ...").
 WINDOW_ALIASES = {
@@ -258,6 +281,88 @@ class DesktopController:
             raise _fail(f"could not move window: {out}")
         mark = " and followed" if follow else " (kept focus)"
         return f"moved active window to workspace {num}{mark}"
+
+    # ------------------------------------------------------------------- mouse
+    @staticmethod
+    def _ydotool_socket() -> str:
+        return (os.environ.get("YDOTOOL_SOCKET")
+                or f"/run/user/{os.getuid()}/.ydotool_socket")
+
+    def _ydotool_ready(self) -> bool:
+        return Path(self._ydotool_socket()).exists()
+
+    def pointer_move(self, x: int, y: int, relative: bool = False) -> str:
+        """Move the pointer (absolute screen coords, or a delta when relative)."""
+        try:
+            nx, ny = int(x), int(y)
+        except (TypeError, ValueError):
+            raise _fail("pointer coordinates must be integers")
+        if relative:
+            rc, out = run(["hyprctl", "cursorpos"], env=hypr_env())
+            if rc != 0 or "," not in out:
+                raise _fail("could not read the current pointer position")
+            try:
+                cx, cy = (int(p.strip()) for p in out.split(",", 1))
+            except ValueError:
+                raise _fail("could not parse the current pointer position")
+            nx, ny = cx + nx, cy + ny
+        rc, out = _dispatch(_lua_call("cursor.move", x=str(nx), y=str(ny)))
+        if rc != 0:
+            raise _fail(f"could not move the pointer: {out}")
+        return f"pointer moved to {nx},{ny}"
+
+    def mouse_click(self, button: str = "left", double: bool = False) -> str:
+        button = (button or "left").strip().lower()
+        code = YDOTOOL_BUTTONS.get(button)
+        if code is None:
+            raise _fail(f"button must be one of {', '.join(YDOTOOL_BUTTONS)}")
+        if not self._ydotool_ready():
+            raise _fail(YDOTOOL_UNAVAILABLE)
+        argv = ["ydotool", "click"]
+        if double:
+            argv += ["--repeat", "2"]
+        argv.append(code)
+        rc, out = run(argv, timeout=10.0)
+        if rc != 0:
+            raise _fail(f"click failed: {out}")
+        return f'{"double-" if double else ""}clicked {button} button'
+
+    def mouse_scroll(self, direction: str, pages: int = 1,
+                     window: str | None = None) -> str:
+        """Turn the wheel over a window (or wherever the pointer already is).
+
+        Pointing at the window first is not decoration: a wheel event goes to
+        whatever is under the cursor, so without the move the scroll would land
+        on whichever pane the mouse happens to be resting over.
+        """
+        direction = (direction or "").strip().lower()
+        if direction not in SCROLL_SIGN:
+            raise _fail(f"direction must be one of {', '.join(SCROLL_SIGN)}")
+        try:
+            pages = int(pages)
+        except (TypeError, ValueError):
+            raise _fail("pages must be a number")
+        pages = max(1, min(pages, 10))
+        if not self._ydotool_ready():
+            raise _fail(YDOTOOL_UNAVAILABLE)
+        win = self._resolve_window(window) if window else (self._active() or None)
+        geo = self._window_geometry(win) if win else None
+        if geo:
+            wx, wy, ww, wh = geo
+            _dispatch(_lua_call("cursor.move",
+                                x=str(wx + ww // 2), y=str(wy + wh // 2)))
+        else:
+            ww = wh = 400
+        span = ww if direction in ("left", "right") else wh
+        clicks = _scroll_clicks(span, pages) * SCROLL_SIGN[direction]
+        axis = "-x" if direction in ("left", "right") else "-y"
+        other = "-y" if axis == "-x" else "-x"
+        rc, out = run(["ydotool", "mousemove", "--wheel",
+                       axis, str(clicks), other, "0"], timeout=10.0)
+        if rc != 0:
+            raise _fail(f"scroll failed: {out}")
+        screens = "a screen" if pages == 1 else f"{pages} screens"
+        return f"scrolled {direction} about {screens}"
 
     def _resolve_window(self, hint: str) -> dict | None:
         """Find a window by alias, class, or title substring.
@@ -593,6 +698,36 @@ class DesktopController:
         return f"typed into {win.get('class') or 'window'} (not sent)"
 
     # ----------------------------------------------------------- dispatcher
+    # Operations the MCP layer must confirm before running (see mcp.py). Kept on
+    # the controller so the description logic lives next to the code that knows
+    # the live window state.
+    GATED = frozenset({
+        "close_active_window",
+        "move_active_window_to_workspace",
+        "set_volume",
+    })
+
+    def describe(self, operation: str, **kwargs) -> str:
+        """A short human description of a gated operation, for confirmation."""
+        if operation == "close_active_window":
+            w = self._active()
+            who = "the active window"
+            if w:
+                who = w.get("class") or w.get("initialClass") or who
+                title = (w.get("title") or "").strip()
+                if title and title.lower() != who.lower():
+                    who = f"{who} — {title[:40]}"
+            return f"close {who}"
+        if operation == "move_active_window_to_workspace":
+            w = self._active()
+            who = "the active window"
+            if w:
+                who = w.get("class") or w.get("initialClass") or who
+            return f"move {who} to workspace {kwargs.get('number')}"
+        if operation == "set_volume":
+            return f"set the volume to {kwargs.get('percent')}%"
+        return operation.replace("_", " ")
+
     def execute(self, operation: str, **kwargs):
         """Dispatch by name to a method (used by CLI and MCP)."""
         classify(operation)  # raises on unknown/denied

@@ -71,8 +71,12 @@ A mic icon sits in the top bar right after the weather widget
 (`~/.config/omarchy/plugins/qwen.voice/`, slot `qwen.voice` in `shell.json`):
 - **Green** mic = listening; **dark** mic = muted/stopped.
 - Click it to toggle the microphone (same as the hotkey).
-- State comes from `$XDG_RUNTIME_DIR/qwen-voice/state.json`, written by the
-  toggle script on every transition and watched live by the widget.
+- State comes from `$XDG_RUNTIME_DIR/qwen-voice/state.json`. The TUI itself
+  writes that file on every mute/unmute (and on start/stop), so the icon always
+  matches what the microphone is actually doing — the toggle script only sends
+  `/m` and reads the result back. Requires the small TUI patch in
+  `patches/patch-tui.py`; re-run `python3 patches/patch-tui.py` after any
+  qwen-audio-agent upgrade (it is idempotent).
 - Source of the plugin is mirrored in this repo under `bar-widget/`.
 - Remove the `qwen.voice` entry from `~/.config/omarchy/shell.json` and delete
   `~/.config/omarchy/plugins/qwen.voice/` to revert.
@@ -106,9 +110,19 @@ backend involved), matching the level policy:
   `list_workspaces`, `get_monitors`, `switch_workspace`, `focus_window`,
   `launch_app`, `set_volume`, `volume_up`, `volume_down`, `mute_audio`,
   `unmute_audio`, `get_audio_status`, `get_system_status`,
-  `read_window`, `read_screen`
+  `read_window`, `read_screen`, `pointer_move`
 - **Level 2 (careful):** `move_active_window_to_workspace`,
-  `close_active_window`, `open_url`, `type_text`
+  `close_active_window`, `open_url`, `type_text`, `mouse_click`, `mouse_scroll`
+- **Confirmation gating:** `close_active_window`, `move_active_window_to_workspace`
+  and `set_volume` do NOT run immediately — they return a pending action and the
+  assistant asks you to confirm out loud before calling `confirm_pending`
+  (or `cancel_pending` to discard). Read-only tools keep working while an action
+  is pending; nothing else runs until it is confirmed or cancelled.
+- **Mouse control:** `pointer_move` (absolute or relative), `mouse_click`
+  (left/right/middle, optional double) and `mouse_scroll` (by screenfuls,
+  pointing at the target window first). Pointer movement uses Hyprland's
+  `hl.dsp.cursor.move`; clicks and the wheel need the `ydotool` daemon
+  (`systemctl --user enable --now ydotool.service`).
 
 Level 3 operations (file deletion, package removal, sudo, shutdown, killing
 processes, sending messages, entering passwords, arbitrary shell) are **not**

@@ -157,6 +157,31 @@ No OpenAI realtime/STT/TTS is used anywhere in the voice path.
 - First realtime voice call + acceptance tests + latency numbers.
 - Wake-word (Desktop app only) first enable.
 
+## Iteration 2026-09-13 (late): confirm gating, mouse control, bar-state fix
+
+- [x] **Confirm/cancel gating** (voice safety): `close_active_window`,
+  `move_active_window_to_workspace` and `set_volume` no longer run immediately.
+  The MCP server returns a pending action; the assistant asks out loud, then
+  `confirm_pending` / `cancel_pending` run or discard it. Read-only tools keep
+  working while pending; all other tools are blocked until resolved.
+  Verified live: "close this window" -> "Shall I close the active window?" ->
+  "yes" -> `confirm_pending` executed.
+- [x] **Mouse control** (`pointer_move` / `mouse_click` / `mouse_scroll`):
+  pointer via `hl.dsp.cursor.move`; clicks and wheel via `ydotool`. Enabled
+  `ydotool.service` (user unit, now enabled + active; socket
+  `/run/user/1000/.ydotool_socket`). Verified live: pointer_move + scroll.
+- [x] **Bar indicator desync fix**: the icon showed muted while the mic was
+  still listening. Root cause: the toggle script tracked its own copy of the
+  mute state. The TUI now OWNS `$XDG_RUNTIME_DIR/qwen-voice/state.json`
+  (patched `tui/src/index.mjs`, see `patches/patch-tui.py`, 8 replacements,
+  idempotent, re-run after upgrades): reads it at start (defaults to muted),
+  writes every mute/unmute, self-mute events, and on exit (`stopped`), and
+  re-asserts the mute to the gateway when voice ownership becomes active.
+  The toggle script only sends `/m` and reads back the real state.
+  Verified: fresh start = muted, toggle on/off flips the file, gateway
+  restart keeps the TUI muted and the icon consistent.
+- Frontend MCP tool count: 21 -> **26**.
+
 ## Acceptance results (updated 2026-09-13, key configured)
 
 - [x] 1. Assistant activation (TUI opened by hotkey, mic on, DashScope realtime connected)

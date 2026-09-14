@@ -2,9 +2,13 @@
 # qwen-voice toggle: push-to-talk with NO visible window.
 #
 # Runs the Qwen TUI inside a hidden, detached tmux session. The hotkey toggles
-# the microphone ('/m' = mute/unmute inside the TUI) without ever showing a
-# terminal window. A desktop notification reports the state, and a small JSON
-# state file drives the bar indicator (green = listening, dark = muted/stopped).
+# the microphone ('/m' inside the TUI) without ever showing a terminal window.
+#
+# The TUI itself owns the state file at $XDG_RUNTIME_DIR/qwen-voice/state.json:
+# it writes its REAL mute state on every transition, so the bar indicator always
+# matches whether the mic is actually listening. This script only sends '/m'
+# and then reads back whatever the TUI actually did - it never invents state.
+# See patches/patch-tui.py for the TUI side of that contract.
 #
 # First press: starts the TUI (muted) in the background.
 # Later presses: toggle the microphone (listen <-> muted).
@@ -15,10 +19,10 @@ SESSION="qwen-voice"
 STATE_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qwen-voice"
 STATE_FILE="$STATE_DIR/state.json"
 
-write_state() {
-  mkdir -p "$STATE_DIR"
-  printf '{"status":"%s","label":"%s"}\n' "$1" "$2" > "$STATE_FILE"
-  chmod 600 "$STATE_FILE"
+read_state() {
+  python3 -c "import json,sys,os
+try: print(json.load(open(os.path.expandvars('$STATE_FILE')))['status'])
+except Exception: print('')" 2>/dev/null
 }
 
 # Make sure `qwenaudio` is reachable inside the tmux session.
@@ -26,26 +30,36 @@ NPM_BIN="$(npm prefix -g 2>/dev/null)/bin"
 case ":$PATH:" in *":$NPM_BIN:"*) ;; *) export PATH="$PATH:$NPM_BIN" ;; esac
 
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
-  # Start the TUI hidden, then mute it so we are push-to-talk by default.
+  # Start the TUI hidden. It begins muted (push-to-talk default) and writes the
+  # state file itself on start, so the icon settles without our help.
   tmux new-session -d -s "$SESSION" -x 110 -y 32 "qwenaudio tui" 2>/dev/null
-  # Wait for the gateway connection before the first toggle.
-  sleep 6
-  tmux send-keys -t "$SESSION" "/m" Enter >/dev/null 2>&1
-  write_state "muted" "Ready in background (muted)"
-  notify-send -a qwen-voice "Qwen Voice" "Ready in background (muted). Press again to listen." 2>/dev/null &
+  before="$(read_state)"
+  for _ in $(seq 1 30); do
+    now="$(read_state)"
+    [ -n "$now" ] && [ "$now" != "$before" ] && break
+    sleep 0.5
+  done
+  state="$(read_state)"; [ -n "$state" ] || state="muted"
+  if [ "$state" = "muted" ]; then
+    notify-send -a qwen-voice "Qwen Voice" "Ready in background (muted). Press again to listen." 2>/dev/null &
+  else
+    notify-send -a qwen-voice "Qwen Voice" "Listening." 2>/dev/null &
+  fi
   exit 0
 fi
 
-# Flip the tracked state, then toggle the microphone (the TUI uses /m).
-current="$(python3 -c "import json,sys,os
-try: print(json.load(open(os.path.expandvars('$STATE_FILE')))['status'])
-except Exception: print('')" 2>/dev/null)"
-if [ "$current" = "listening" ]; then
-  next="muted"
-else
-  next="listening"
-fi
+before="$(read_state)"
 tmux send-keys -t "$SESSION" "/m" Enter >/dev/null 2>&1
-write_state "$next" "Microphone $next"
-notify-send -a qwen-voice "Qwen Voice" "Microphone $next" 2>/dev/null &
+# The TUI writes the new state; give it a few seconds.
+for _ in $(seq 1 12); do
+  now="$(read_state)"
+  [ -n "$now" ] && [ "$now" != "$before" ] && break
+  sleep 0.25
+done
+state="$(read_state)"; [ -n "$state" ] || state="$before"
+case "$state" in
+  listening) notify-send -a qwen-voice "Qwen Voice" "Microphone listening" 2>/dev/null & ;;
+  muted)     notify-send -a qwen-voice "Qwen Voice" "Microphone muted" 2>/dev/null & ;;
+  stopped)   notify-send -a qwen-voice "Qwen Voice" "Voice assistant stopped" 2>/dev/null & ;;
+esac
 exit 0

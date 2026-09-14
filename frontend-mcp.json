@@ -30,10 +30,15 @@
         "get_system_status": { "enabled": true, "description": "OS, kernel, hostname, uptime, memory, time." },
         "read_window": { "enabled": true, "timeoutMs": 30000, "maxResultBytes": 65536, "description": "OCR a window and return its text - used to read back what an app/agent produced." },
         "read_screen": { "enabled": true, "timeoutMs": 30000, "maxResultBytes": 65536, "description": "OCR the whole focused monitor." },
+        "pointer_move": { "enabled": true, "description": "Move the mouse pointer (absolute x,y, or a delta with relative=true)." },
+        "mouse_click": { "enabled": true, "description": "Click the left/right/middle button at the pointer (optionally double)." },
+        "mouse_scroll": { "enabled": true, "description": "Scroll a window (or the pointer's location) up/down/left/right by pages." },
         "move_active_window_to_workspace": { "enabled": true, "description": "Move the focused window to a numbered workspace." },
-        "close_active_window": { "enabled": true, "description": "Close the focused application window." },
+        "close_active_window": { "enabled": true, "description": "Close the focused application window (asks you to confirm first)." },
         "open_url": { "enabled": true, "description": "Open an http(s) URL in the default browser." },
-        "type_text": { "enabled": true, "description": "Focus a window and type text (optionally press Enter to send). Used to hand prompts to the user's coding agent window ('opencode')." }
+        "type_text": { "enabled": true, "description": "Focus a window and type text (optionally press Enter to send). Used to hand prompts to the user's coding agent window ('opencode')." },
+        "confirm_pending": { "enabled": true, "description": "Run the action that is waiting for confirmation." },
+        "cancel_pending": { "enabled": true, "description": "Discard the action that is waiting for confirmation." }
       }
     }
   }

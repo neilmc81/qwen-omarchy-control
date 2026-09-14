@@ -160,6 +160,58 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "pointer_move",
+        "description": "Move the mouse pointer to an absolute screen position (x, y), or by a "
+                       "delta when relative=true. Use together with read_window/read_screen "
+                       "and mouse_click to operate any GUI app. Level 1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Absolute x, or delta x when relative."},
+                "y": {"type": "integer", "description": "Absolute y, or delta y when relative."},
+                "relative": {"type": "boolean", "default": False,
+                             "description": "True to move by (x, y) from the current pointer."},
+            },
+            "required": ["x", "y"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "mouse_click",
+        "description": "Click the mouse button at the current pointer position. Move the "
+                       "pointer first (pointer_move) unless you are clicking where it already "
+                       "is. Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "button": {"type": "string", "enum": ["left", "right", "middle"],
+                           "description": "Which button; defaults to left."},
+                "double": {"type": "boolean", "default": False,
+                           "description": "True to double-click (e.g. open an item)."},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "mouse_scroll",
+        "description": "Scroll a window (or wherever the pointer is) by about one screenful "
+                       "per page. The pointer is moved to the window's center first. "
+                       "Read the screen again afterwards; the content changed. Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+                "pages": {"type": "integer", "minimum": 1, "maximum": 10, "default": 1,
+                          "description": "Screenfuls to scroll (default 1)."},
+                "window": {"type": "string",
+                           "description": "Window to scroll (alias, class or title); "
+                                          "empty = the focused window."},
+            },
+            "required": ["direction"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "move_active_window_to_workspace",
         "description": "Move the focused window to workspace <number> (keep focus unless "
                        "<follow> is true). Level 2.",
@@ -211,12 +263,32 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "confirm_pending",
+        "description": "Run the action that is waiting for confirmation (returned by a "
+                       "gated tool as {\"pending\": ...}). Call this after the user "
+                       "confirms. Level 2.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "cancel_pending",
+        "description": "Discard the action that is waiting for confirmation. Call this "
+                       "after the user declines. Level 1.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
 ]
 
 
 class McpHandler:
+    # Read-only tools stay usable while an action is waiting for confirmation.
+    READ_ONLY = frozenset({
+        "get_active_window", "list_windows", "list_workspaces", "get_monitors",
+        "get_audio_status", "get_system_status", "read_window", "read_screen",
+    })
+
     def __init__(self) -> None:
         self.controller = DesktopController()
+        self._pending: tuple[str, dict, str] | None = None
         self._pending_notes: list[dict] = []
         self._request_id = 0
 
@@ -281,6 +353,37 @@ class McpHandler:
             })
 
     def _run_tool(self, name: str, args: dict):
+        if name == "confirm_pending":
+            return self._resolve_pending(confirm=True)
+        if name == "cancel_pending":
+            return self._resolve_pending(confirm=False)
+        if self._pending is not None and name not in self.READ_ONLY:
+            _, _, desc = self._pending
+            raise PolicyError(
+                f"an action is waiting for confirmation: {desc}. "
+                "Call confirm_pending to run it, or cancel_pending to discard "
+                "it, before doing anything else.")
+        if name in DesktopController.GATED:
+            desc = self.controller.describe(name, **args)
+            self._pending = (name, args, desc)
+            return {
+                "pending": desc,
+                "instructions": "Ask the user to confirm (e.g. \"yes\", \"go "
+                                "ahead\"). If they confirm, call confirm_pending. "
+                                "If they decline, call cancel_pending.",
+            }
+        return self._execute(name, args)
+
+    def _resolve_pending(self, confirm: bool) -> dict:
+        if self._pending is None:
+            return {"result": "no pending action"}
+        name, args, desc = self._pending
+        self._pending = None
+        if not confirm:
+            return {"result": f"cancelled: {desc}"}
+        return self._execute(name, args)
+
+    def _execute(self, name: str, args: dict):
         ctrl = self.controller
         if name == "get_active_window":
             return ctrl.get_active_window()
@@ -317,6 +420,16 @@ class McpHandler:
             return {"result": ctrl.read_window(str(args["window"]) if args.get("window") else None)}
         if name == "read_screen":
             return {"result": ctrl.read_screen()}
+        if name == "pointer_move":
+            return {"result": ctrl.pointer_move(
+                int(args["x"]), int(args["y"]), bool(args.get("relative", False)))}
+        if name == "mouse_click":
+            return {"result": ctrl.mouse_click(
+                str(args.get("button") or "left"), bool(args.get("double", False)))}
+        if name == "mouse_scroll":
+            return {"result": ctrl.mouse_scroll(
+                str(args["direction"]), int(args.get("pages", 1)),
+                str(args["window"]) if args.get("window") else None)}
         if name == "move_active_window_to_workspace":
             return {"result": ctrl.move_active_window_to_workspace(
                 int(args["number"]), bool(args.get("follow", False)))}

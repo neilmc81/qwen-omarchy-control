@@ -11,12 +11,12 @@ class PolicyLevelTest(unittest.TestCase):
                    "get_monitors", "switch_workspace", "focus_window",
                    "launch_app", "set_volume", "volume_up", "volume_down",
                    "mute_audio", "unmute_audio", "get_audio_status",
-                   "get_system_status"):
+                   "get_system_status", "pointer_move"):
             self.assertEqual(policy.classify(op), "level1", op)
 
     def test_level2_careful(self):
         for op in ("move_active_window_to_workspace", "close_active_window",
-                   "open_url", "type_text"):
+                   "open_url", "type_text", "mouse_click", "mouse_scroll"):
             self.assertEqual(policy.classify(op), "level2", op)
 
     def test_level3_denied(self):
