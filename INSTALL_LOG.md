@@ -182,6 +182,28 @@ No OpenAI realtime/STT/TTS is used anywhere in the voice path.
   restart keeps the TUI muted and the icon consistent.
 - Frontend MCP tool count: 21 -> **26**.
 
+## Iteration 2026-09-14: cost & quota tracker
+
+- **Gateway usage capture**: patched `server/src/voice/realtime-provider.mjs`
+  (`patches/patch-gateway-usage.py`, idempotent) to record the DashScope
+  `response.done` `usage` object (input/output tokens, characters) to
+  `~/.config/qwaudio/state/usage.jsonl`. Verified live: a 3-word reply logged
+  `input_tokens=7246 / output_tokens=17`.
+- **Collector** `bin/qwen-cost-update`: aggregates today/month/all-time + per-day,
+  per-model; computes est. cost from configurable rates; free-quota meter; and
+  optional live Aliyun BSS billing (`QueryAccountBalance` / `QueryBillOverview`,
+  HMAC-SHA1 signed). Writes `~/.local/state/qwen-voice/cost/{overview,daily,billing}.json`.
+  Unit tests added (56 total).
+- **Bar widget** `qwen.cost` (`$` icon after the mic): dropdown (Panel +
+  KeyboardPanel, same pattern as clock/weather) showing usage, quota meter, and
+  billing. Slot added to shell.json; auto-reloads. Verified: opens via
+  `omarchy shell shell summon qwen.cost`, renders real data.
+- **Refresh**: widget refreshes on open + every 5 min; systemd user timer
+  `qwen-cost-update.timer` every 30 min.
+- **Config** `~/.config/qwaudio/cost.json` (0600): AccessKey (billing), free
+  quota amount, per-1K rates. Until the user adds an AccessKey it shows "local
+  estimate only"; quota meter waits for the amount to be set.
+
 ## Acceptance results (updated 2026-09-13, key configured)
 
 - [x] 1. Assistant activation (TUI opened by hotkey, mic on, DashScope realtime connected)

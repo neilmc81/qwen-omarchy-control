@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""qwen-cost-update: aggregate Qwen voice cost/usage into display records.
+
+Two data sources:
+  * REAL token usage: ~/.config/qwaudio/state/usage.jsonl, written by the
+    gateway (patches/patch-gateway-usage.py) one line per completed realtime
+    response (input/output tokens, characters, ...).
+  * LIVE billing (optional): Alibaba Cloud BSS via an AccessKey stored in
+    ~/.config/qwaudio/cost.json. Queries account balance + this month's bill
+    (QueryAccountBalance / QueryBillOverview). Without credentials it falls
+    back to a local estimate using the configured per-1K-token rates.
+
+Writes display records to $XDG_STATE_HOME/qwen-voice/cost/ (overview.json,
+daily.json, meta.json) for the qwen.cost bar widget to watch.
+
+Run with --refresh to force the live billing fetch; otherwise it reuses a
+recent billing snapshot so the panel stays snappy.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import datetime as dt
+import hashlib
+import hmac
+import json
+import os
+import sys
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Paths and config
+# ---------------------------------------------------------------------------
+
+HOME = Path.home()
+CONFIG_DIR = Path(os.environ.get("QWEN_AUDIO_CONFIG_DIR", HOME / ".config" / "qwaudio"))
+USAGE_FILE = Path(os.environ.get("QWEN_AUDIO_USAGE_FILE", CONFIG_DIR / "state" / "usage.jsonl"))
+COST_CONFIG = Path(os.environ.get("QWEN_AUDIO_COST_CONFIG", CONFIG_DIR / "cost.json"))
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local" / "state")) / "qwen-voice" / "cost"
+
+# DashScope realtime is billed on reported tokens. Without a real price the
+# local estimate is 0 until the user fills in rates in cost.json (USD per 1K).
+DEFAULT_RATES = {
+    "qwen-audio-3.0-realtime-flash": {"inputPer1k": 0.0, "outputPer1k": 0.0},
+}
+
+BSS_ENDPOINT = "https://business.aliyuncs.com/"
+BSS_VERSION = "2017-12-14"
+BILLING_SNAPSHOT_TTL_SEC = 30 * 60  # reuse a live billing result for 30 min
+
+
+def load_config() -> dict:
+    cfg = {"accessKeyId": "", "accessKeySecret": "", "freeQuota": None,
+           "rates": DEFAULT_RATES}
+    if COST_CONFIG.exists():
+        try:
+            data = json.loads(COST_CONFIG.read_text())
+            for key in ("accessKeyId", "accessKeySecret", "freeQuota", "rates"):
+                if data.get(key) is not None:
+                    cfg[key] = data[key]
+        except (OSError, ValueError):
+            pass
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+# Alibaba Cloud BSS (OpenAPI v1, HMAC-SHA1 signature)
+# ---------------------------------------------------------------------------
+
+
+def bss_sign(params: dict, secret: str) -> str:
+    def enc(value: str) -> str:
+        return urllib.parse.quote(str(value), safe="~")
+
+    canonical = "&".join(
+        f"{enc(k)}={enc(v)}" for k, v in sorted(params.items()))
+    string_to_sign = f"GET&%2F&{urllib.parse.quote(canonical, safe='~')}"
+    digest = hmac.new(
+        (secret + "&").encode("utf-8"), string_to_sign.encode("utf-8"),
+        hashlib.sha1,
+    ).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+
+def bss_call(cfg: dict, action: str, extra: dict | None = None) -> dict:
+    access_key = (cfg.get("accessKeyId") or "").strip()
+    secret = (cfg.get("accessKeySecret") or "").strip()
+    if not access_key or not secret:
+        raise RuntimeError("no Alibaba Cloud AccessKey configured in cost.json")
+    params = {
+        "AccessKeyId": access_key,
+        "Action": action,
+        "Format": "JSON",
+        "SignatureMethod": "HMAC-SHA1",
+        "SignatureNonce": f"{int(time.time() * 1000)}-{os.getpid()}",
+        "SignatureVersion": "1.0",
+        "Timestamp": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "Version": BSS_VERSION,
+    }
+    params.update(extra or {})
+    params["Signature"] = bss_sign(params, secret)
+    query = urllib.parse.urlencode(params)
+    req = urllib.request.Request(f"{BSS_ENDPOINT}?{query}", method="GET")
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def fetch_live_billing(cfg: dict) -> dict:
+    """Return a billing record from Aliyun BSS, or raise."""
+    result: dict = {"source": "aliyun", "fetchedAt": dt.datetime.now().isoformat(timespec="seconds")}
+    balance = bss_call(cfg, "QueryAccountBalance").get("Data") or {}
+    result["balance"] = balance.get("AvailableAmount")
+    result["cashAmount"] = balance.get("CashAmount")
+    result["currency"] = balance.get("Currency")
+    this_month = dt.date.today().strftime("%Y-%m")
+    bill = bss_call(cfg, "QueryBillOverview", {"BillingCycle": this_month})
+    items = (((bill.get("Data") or {}).get("Items") or {}).get("Item")) or []
+    if isinstance(items, dict):
+        items = [items]
+    result["month"] = this_month
+    result["monthItems"] = [
+        {"product": it.get("ProductName") or it.get("ProductCode"),
+         "pretaxAmount": it.get("PretaxAmount")}
+        for it in items
+    ]
+    try:
+        result["monthBill"] = round(
+            sum(float(it.get("PretaxAmount") or 0) for it in items), 4)
+    except (TypeError, ValueError):
+        result["monthBill"] = None
+    return result
+
+
+def billing_snapshot_path() -> Path:
+    return STATE_DIR / "billing.json"
+
+
+def read_live_billing(cfg: dict, force: bool) -> dict:
+    snap = billing_snapshot_path()
+    if not force and snap.exists():
+        try:
+            data = json.loads(snap.read_text())
+            fetched = data.get("fetchedAt", "")
+            if fetched:
+                age = time.time() - dt.datetime.fromisoformat(fetched).timestamp()
+                if 0 <= age < BILLING_SNAPSHOT_TTL_SEC:
+                    return data
+        except (ValueError, OSError):
+            pass
+    try:
+        data = fetch_live_billing(cfg)
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        snap.write_text(json.dumps(data, ensure_ascii=False))
+        return data
+    except Exception as exc:  # noqa: BLE001 - report to the widget, keep going
+        return {"source": "local-estimate", "error": str(exc)[:300]}
+
+
+# ---------------------------------------------------------------------------
+# Usage aggregation
+# ---------------------------------------------------------------------------
+
+TOKEN_FIELDS = ("input_tokens", "output_tokens", "total_tokens")
+
+
+def load_usage_rows() -> list[dict]:
+    if not USAGE_FILE.exists():
+        return []
+    rows = []
+    for line in USAGE_FILE.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        at = row.get("at", "")
+        try:
+            row["_local"] = dt.datetime.fromisoformat(at).astimezone()
+        except (TypeError, ValueError):
+            row["_local"] = None
+        rows.append(row)
+    return rows
+
+
+def aggregate(rows: list[dict]) -> dict:
+    def zero() -> dict:
+        return {"responses": 0, "inputTokens": 0, "outputTokens": 0,
+                "totalTokens": 0, "estCostUsd": 0.0}
+
+    def add(bucket: dict, row: dict, rates: dict) -> None:
+        model = str(row.get("model") or "unknown")
+        rate = rates.get(model) or {}
+        inp = int(row.get("input_tokens") or 0)
+        out = int(row.get("output_tokens") or 0)
+        bucket["responses"] += 1
+        bucket["inputTokens"] += inp
+        bucket["outputTokens"] += out
+        bucket["totalTokens"] += inp + out
+        bucket["estCostUsd"] += inp / 1000.0 * float(rate.get("inputPer1k") or 0)
+        bucket["estCostUsd"] += out / 1000.0 * float(rate.get("outputPer1k") or 0)
+
+    cfg = load_config()
+    rates = cfg.get("rates") or DEFAULT_RATES
+    today = dt.date.today()
+    month_prefix = today.strftime("%Y-%m")
+    out = {
+        "today": zero(), "month": zero(), "all": zero(),
+        "perModel": {}, "daily": {},
+    }
+    for row in rows:
+        local = row.get("_local")
+        if local is None:
+            at = row.get("at", "")
+            try:
+                local = dt.datetime.fromisoformat(at).astimezone()
+            except (TypeError, ValueError):
+                continue
+        add(out["all"], row, rates)
+        if local.date() == today:
+            add(out["today"], row, rates)
+        if local.strftime("%Y-%m") == month_prefix:
+            add(out["month"], row, rates)
+        day = local.strftime("%Y-%m-%d")
+        out["daily"].setdefault(day, zero())
+        add(out["daily"][day], row, rates)
+        model = str(row.get("model") or "unknown")
+        out["perModel"].setdefault(model, {"today": zero(), "month": zero()})
+        if local.date() == today:
+            add(out["perModel"][model]["today"], row, rates)
+        if local.strftime("%Y-%m") == month_prefix:
+            add(out["perModel"][model]["month"], row, rates)
+
+    for bucket in list(out["daily"].values()) + \
+            [m["today"] for m in out["perModel"].values()] + \
+            [m["month"] for m in out["perModel"].values()]:
+        bucket["estCostUsd"] = round(bucket["estCostUsd"], 6)
+    for key in ("today", "month", "all"):
+        out[key]["estCostUsd"] = round(out[key]["estCostUsd"], 6)
+    return out
+
+
+def quota_record(usage: dict) -> dict | None:
+    cfg = load_config()
+    quota = cfg.get("freeQuota")
+    if not quota or not isinstance(quota, dict):
+        return None
+    try:
+        amount = float(quota.get("amount") or 0)
+    except (TypeError, ValueError):
+        return None
+    unit = str(quota.get("unit") or "usd")
+    record = {
+        "amount": amount,
+        "unit": unit,
+        "label": str(quota.get("label") or ""),
+    }
+    if unit == "tokens":
+        consumed = usage["all"]["totalTokens"]
+        record["consumed"] = consumed
+    else:  # usd
+        consumed = usage["all"]["estCostUsd"]
+        record["consumed"] = round(consumed, 4)
+    record["remaining"] = round(amount - consumed, 4)
+    record["percent"] = round(min(100.0, consumed / amount * 100.0), 1) if amount else 0.0
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--refresh", action="store_true",
+                        help="force a live Aliyun billing fetch")
+    parser.add_argument("--json", action="store_true", help="print overview.json")
+    args = parser.parse_args()
+
+    cfg = load_config()
+    usage = aggregate(load_usage_rows())
+    billing = read_live_billing(cfg, args.refresh)
+
+    overview = {
+        "updatedAt": dt.datetime.now().isoformat(timespec="seconds"),
+        "today": usage["today"],
+        "month": usage["month"],
+        "all": usage["all"],
+        "perModel": usage["perModel"],
+        "quota": quota_record(usage),
+        "billing": billing,
+    }
+    daily = {
+        "updatedAt": overview["updatedAt"],
+        "days": [
+            {"date": day, **usage["daily"][day]}
+            for day in sorted(usage["daily"], reverse=True)[:31]
+        ],
+    }
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    (STATE_DIR / "overview.json").write_text(json.dumps(overview, ensure_ascii=False, indent=1))
+    (STATE_DIR / "daily.json").write_text(json.dumps(daily, ensure_ascii=False, indent=1))
+    (STATE_DIR / "meta.json").write_text(json.dumps({
+        "usageFile": str(USAGE_FILE),
+        "costConfig": str(COST_CONFIG),
+        "usageRows": len(load_usage_rows()),
+    }, ensure_ascii=False, indent=1))
+
+    if args.json:
+        print(json.dumps(overview, ensure_ascii=False, indent=1))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

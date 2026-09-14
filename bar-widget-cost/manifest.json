@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "qwen.cost",
+  "name": "Qwen Voice Cost",
+  "version": "0.1.0",
+  "author": "qwen-omarchy-control",
+  "description": "DashScope voice cost & quota in a bar dropdown: real token usage, estimated cost, free quota remaining, and live Alibaba Cloud billing.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Qwen Voice Cost",
+    "description": "Cost tracker for the Qwen voice assistant. One bar icon; click opens a dropdown with today/month/all-time usage, cost, free quota and billing.",
+    "category": "AI",
+    "aliases": [
+      "cost",
+      "usage",
+      "qwen-cost"
+    ],
+    "allowMultiple": false
+  }
+}

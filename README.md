@@ -92,6 +92,48 @@ Set in `~/.config/qwaudio/USER.md` (the gateway's user-preference file):
 
 These apply to new voice sessions (restart the gateway service to reapply).
 
+## Cost tracking
+
+A **cost/usage dropdown** in the bar (`qwen.cost` slot, `$` icon right after the
+mic). Click it (or `omarchy shell shell summon qwen.cost`) to open a panel with
+today / this month / all-time token usage, estimated cost, a free-quota meter,
+and live Alibaba Cloud billing.
+
+How it works:
+- **Real token usage** comes from the gateway: `patches/patch-gateway-usage.py`
+  records one JSON line per completed realtime response
+  (`response.done` -> `usage`) to `~/.config/qwaudio/state/usage.jsonl`. Re-run
+  that patch after upgrading qwen-audio-agent.
+- **Collector** `bin/qwen-cost-update` aggregates usage, computes the free-quota
+  meter and (optionally) fetches live billing, and writes
+  `~/.local/state/qwen-voice/cost/{overview,daily,billing}.json` for the widget
+  to watch. Refreshed on widget open, every 5 minutes, and by a systemd timer
+  (`qwen-cost-update.timer`, every 30 min).
+- **Live billing** (optional): put an Alibaba Cloud AccessKey with `bss:read`
+  permission into `~/.config/qwaudio/cost.json` (`accessKeyId` /
+  `accessKeySecret`). The collector then calls BSS `QueryAccountBalance` +
+  `QueryBillOverview` for the account balance and this month's bill. Without
+  credentials it falls back to "local estimate only".
+- **Free quota** (optional): set `freeQuota` in the same config —
+  `{ "amount": N, "unit": "tokens"|"usd", "label": "..." }`. The meter subtracts
+  real consumption and turns red past 90%.
+- **Estimated cost** uses per-model `rates` (USD per 1K tokens) in the config;
+  fill them in from the DashScope console to see a local cost estimate.
+
+Config lives in `~/.config/qwaudio/cost.json` (0600; contains the AccessKey
+secret). Example:
+
+```json
+{
+  "accessKeyId": "LTAI...",
+  "accessKeySecret": "...",
+  "freeQuota": { "amount": 1000000, "unit": "tokens", "label": "DashScope free quota" },
+  "rates": { "qwen-audio-3.0-realtime-flash": { "inputPer1k": 0.0, "outputPer1k": 0.0 } }
+}
+```
+
+The widget source is mirrored in this repo under `bar-widget-cost/`.
+
 ## Wake word
 
 The Qwen **Desktop app** ships a local, on-device wake word (sherpa-onnx,
