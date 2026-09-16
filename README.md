@@ -21,11 +21,23 @@ qwen-audio-agent (Realtime, DashScope Qwen Audio 3.0 Realtime Flash)
 
 | Piece | What it is | Where |
 | --- | --- | --- |
-| qwen-audio-agent | realtime voice runtime (gateway + TUI) | global npm package (`/home/neil/.local/share/mise/installs/node/26.8.1/lib/node_modules/qwen-audio-agent`) |
+| qwen-audio-agent | realtime voice runtime (gateway + TUI), **stock/unmodified** | global npm package (`/home/neil/.local/share/mise/installs/node/26.8.1/lib/node_modules/qwen-audio-agent`) |
 | Desktop controller | structured, allowlisted operations | `~/.local/share/qwen-omarchy-control/` |
 | MCP server | stdio JSON-RPC exposing the controller to the voice frontend | `bin/desktop-mcp` |
 | Voice frontend model | `qwen-audio-3.0-realtime-flash` via DashScope | `~/.config/qwaudio/config.env` |
-| Coding backend | Hermes via native ACP (`hermes acp`), reuses `~/.hermes` model/provider/auth | `AGENT_PROTOCOL=hermes` |
+| Coordinator | persistent desktop-action executor (Unix socket) | `omarchy-voice-coordinator.service` |
+| Bar widgets | mic state + cost | `~/.config/omarchy/plugins/{qwen.voice,qwen.cost}` |
+
+> **Design note.** The voice loop is deliberately left to Qwen's own code. An
+> earlier iteration inserted a "controlled voice bridge" overlay into the
+> gateway's turn/commit path to add a status widget and a physical stop key.
+> That overlay made the assistant unreliable: it disabled server-side turn
+> detection, let audio pile up to the 30-second cap, dropped tool results and
+> cancelled in-flight replies, so commands ran but nothing was spoken back.
+> It was removed. Everything this repo adds now hangs **off the side** of the
+> voice loop (local MCP tools, hotkey helpers, bar widgets) and never inside it.
+> Reliability measured after removal: tool calls `received → result_ready →
+> playback.started` with zero failures.
 
 ## Quick commands
 

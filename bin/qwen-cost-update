@@ -27,7 +27,10 @@ import hmac
 import json
 import os
 import sys
+import tempfile
 import time
+import uuid
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -48,9 +51,22 @@ DEFAULT_RATES = {
     "qwen-audio-3.0-realtime-flash": {"inputPer1k": 0.0, "outputPer1k": 0.0},
 }
 
-BSS_ENDPOINT = "https://business.aliyuncs.com/"
+BSS_ENDPOINT = "https://business.ap-southeast-1.aliyuncs.com/"
 BSS_VERSION = "2017-12-14"
 BILLING_SNAPSHOT_TTL_SEC = 30 * 60  # reuse a live billing result for 30 min
+
+
+def write_json_atomic(path: Path, data: dict) -> None:
+    """Publish complete private records; FileView must never see partial JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=1)
+            stream.write("\n")
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
 
 def load_config() -> dict:
@@ -96,7 +112,7 @@ def bss_call(cfg: dict, action: str, extra: dict | None = None) -> dict:
         "Action": action,
         "Format": "JSON",
         "SignatureMethod": "HMAC-SHA1",
-        "SignatureNonce": f"{int(time.time() * 1000)}-{os.getpid()}",
+        "SignatureNonce": str(uuid.uuid4()),
         "SignatureVersion": "1.0",
         "Timestamp": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "Version": BSS_VERSION,
@@ -105,8 +121,38 @@ def bss_call(cfg: dict, action: str, extra: dict | None = None) -> dict:
     params["Signature"] = bss_sign(params, secret)
     query = urllib.parse.urlencode(params)
     req = urllib.request.Request(f"{BSS_ENDPOINT}?{query}", method="GET")
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # Never publish the signed request URL or an AccessKey in widget errors.
+        try:
+            code = json.loads(exc.read().decode("utf-8")).get("Code", exc.code)
+        except (ValueError, UnicodeError):
+            code = exc.code
+        raise RuntimeError(f"Alibaba billing API {action}: {code}") from None
+    if data.get("Success") is False or data.get("Code") not in (None, "Success", "200"):
+        raise RuntimeError(f"Alibaba billing API {action}: {data.get('Code', 'failed')}")
+    return data
+
+
+def connect_billing_key(key_file: Path) -> dict:
+    """Install a RAM reader key privately, only after its billing calls succeed."""
+    try:
+        data = json.loads(key_file.read_text())
+        key = data.get("AccessKey", data)
+        access_key = key["AccessKeyId"]
+        secret = key["AccessKeySecret"]
+        if not isinstance(access_key, str) or not isinstance(secret, str) or not access_key or not secret:
+            raise ValueError("empty credential")
+    except (OSError, ValueError, KeyError, TypeError):
+        raise RuntimeError("The AccessKey file is missing or invalid.") from None
+    cfg = load_config()
+    cfg.update(accessKeyId=access_key, accessKeySecret=secret)
+    billing = fetch_live_billing(cfg)
+    write_json_atomic(COST_CONFIG, cfg)
+    write_json_atomic(billing_snapshot_path(), billing)
+    return cfg
 
 
 def fetch_live_billing(cfg: dict) -> dict:
@@ -124,6 +170,9 @@ def fetch_live_billing(cfg: dict) -> dict:
     result["month"] = this_month
     result["monthItems"] = [
         {"product": it.get("ProductName") or it.get("ProductCode"),
+         "productCode": it.get("ProductCode"),
+         "productType": it.get("ProductType"),
+         "pretaxGrossAmount": it.get("PretaxGrossAmount"),
          "pretaxAmount": it.get("PretaxAmount")}
         for it in items
     ]
@@ -132,6 +181,25 @@ def fetch_live_billing(cfg: dict) -> dict:
             sum(float(it.get("PretaxAmount") or 0) for it in items), 4)
     except (TypeError, ValueError):
         result["monthBill"] = None
+    studio_items = [it for it in items if it.get("ProductCode") == "sfm"]
+    voice_items = [it for it in studio_items
+                   if it.get("ProductType") == "sfm_inferenceFunAudio_public_intl"]
+    result["modelStudioMonthBill"] = round(sum(float(it.get("PretaxAmount") or 0)
+                                              for it in studio_items), 4)
+    result["modelStudioPayable"] = round(sum(float(it.get("AfterTaxAmount")
+                                                  if it.get("AfterTaxAmount") is not None
+                                                  else it.get("PretaxAmount") or 0)
+                                            for it in studio_items), 4)
+    result["modelStudioRoundDownDiscount"] = round(sum(float(it.get("RoundDownDiscount") or 0)
+                                                      for it in studio_items), 6)
+    # Model Studio's cost overview displays usage before invoice rounding.
+    # Keep it distinct from PretaxAmount, the actual rounded bill amount.
+    result["modelStudioGrossCost"] = round(sum(float(it.get("PretaxGrossAmount")
+                                                    if it.get("PretaxGrossAmount") is not None
+                                                    else it.get("PretaxAmount") or 0)
+                                              for it in studio_items), 6)
+    result["voiceMonthBill"] = round(sum(float(it.get("PretaxAmount") or 0)
+                                       for it in voice_items), 4) if voice_items else None
     return result
 
 
@@ -141,11 +209,14 @@ def billing_snapshot_path() -> Path:
 
 def read_live_billing(cfg: dict, force: bool) -> dict:
     snap = billing_snapshot_path()
-    if not force and snap.exists():
+    cached = None
+    if snap.exists():
         try:
             data = json.loads(snap.read_text())
+            if data.get("source") == "aliyun":
+                cached = data
             fetched = data.get("fetchedAt", "")
-            if fetched:
+            if not force and fetched and data.get("month") == dt.date.today().strftime("%Y-%m"):
                 age = time.time() - dt.datetime.fromisoformat(fetched).timestamp()
                 if 0 <= age < BILLING_SNAPSHOT_TTL_SEC:
                     return data
@@ -153,10 +224,11 @@ def read_live_billing(cfg: dict, force: bool) -> dict:
             pass
     try:
         data = fetch_live_billing(cfg)
-        snap.parent.mkdir(parents=True, exist_ok=True)
-        snap.write_text(json.dumps(data, ensure_ascii=False))
+        write_json_atomic(snap, data)
         return data
     except Exception as exc:  # noqa: BLE001 - report to the widget, keep going
+        if cached:
+            return {**cached, "stale": True, "error": str(exc)[:300]}
         return {"source": "local-estimate", "error": str(exc)[:300]}
 
 
@@ -244,6 +316,25 @@ def aggregate(rows: list[dict]) -> dict:
         bucket["estCostUsd"] = round(bucket["estCostUsd"], 6)
     for key in ("today", "month", "all"):
         out[key]["estCostUsd"] = round(out[key]["estCostUsd"], 6)
+    # A zero-rate default is deliberately *not* a $0.00 estimate.  It means
+    # no price source has been configured, and presenting it as money has led
+    # people to believe the widget was reading their Alibaba bill.
+    used_models = {str(row.get("model") or "unknown") for row in rows}
+
+    def has_complete_rate(model: str) -> bool:
+        rate = rates.get(model) or {}
+        try:
+            return float(rate.get("inputPer1k") or 0) > 0 and \
+                float(rate.get("outputPer1k") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    out["estimation"] = {
+        "available": bool(used_models) and all(has_complete_rate(model) for model in used_models),
+        "currency": "USD",
+        "reason": "" if used_models and all(has_complete_rate(model) for model in used_models)
+                  else "No complete local price is configured for the recorded model(s).",
+    }
     return out
 
 
@@ -255,6 +346,8 @@ def quota_record(usage: dict) -> dict | None:
     try:
         amount = float(quota.get("amount") or 0)
     except (TypeError, ValueError):
+        return None
+    if amount <= 0:
         return None
     unit = str(quota.get("unit") or "usd")
     record = {
@@ -283,9 +376,15 @@ def main() -> int:
     parser.add_argument("--refresh", action="store_true",
                         help="force a live Aliyun billing fetch")
     parser.add_argument("--json", action="store_true", help="print overview.json")
+    parser.add_argument("--connect-key-file", type=Path,
+                        help="privately install a dedicated RAM reader AccessKey JSON file")
     args = parser.parse_args()
 
-    cfg = load_config()
+    try:
+        cfg = connect_billing_key(args.connect_key_file) if args.connect_key_file else load_config()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     usage = aggregate(load_usage_rows())
     billing = read_live_billing(cfg, args.refresh)
 
@@ -295,6 +394,7 @@ def main() -> int:
         "month": usage["month"],
         "all": usage["all"],
         "perModel": usage["perModel"],
+        "estimation": usage["estimation"],
         "quota": quota_record(usage),
         "billing": billing,
     }
@@ -306,13 +406,13 @@ def main() -> int:
         ],
     }
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    (STATE_DIR / "overview.json").write_text(json.dumps(overview, ensure_ascii=False, indent=1))
-    (STATE_DIR / "daily.json").write_text(json.dumps(daily, ensure_ascii=False, indent=1))
-    (STATE_DIR / "meta.json").write_text(json.dumps({
+    write_json_atomic(STATE_DIR / "overview.json", overview)
+    write_json_atomic(STATE_DIR / "daily.json", daily)
+    write_json_atomic(STATE_DIR / "meta.json", {
         "usageFile": str(USAGE_FILE),
         "costConfig": str(COST_CONFIG),
         "usageRows": len(load_usage_rows()),
-    }, ensure_ascii=False, indent=1))
+    })
 
     if args.json:
         print(json.dumps(overview, ensure_ascii=False, indent=1))

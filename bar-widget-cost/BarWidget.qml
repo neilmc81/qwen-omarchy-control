@@ -12,6 +12,21 @@ BarWidget {
   id: root
   moduleName: "qwen.cost"
 
+  readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state"
+  property var overview: null
+  readonly property var billing: overview && overview.billing ? overview.billing : null
+
+  FileView {
+    path: root.stateHome + "/qwen-voice/cost/overview.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      try { root.overview = JSON.parse(text()) } catch (e) { root.overview = null }
+    }
+    onLoadFailed: root.overview = null
+  }
+
   // Shape contract for the bar's popup routing (see clock BarWidget).
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
@@ -32,9 +47,9 @@ BarWidget {
     onTriggered: root.refreshData()
   }
 
-  function refreshData() {
+  function refreshData(force) {
     if (root.bar) root.bar.run(Quickshell.env("HOME")
-      + "/.local/share/qwen-omarchy-control/bin/qwen-cost-update")
+      + "/.local/share/qwen-omarchy-control/bin/qwen-cost-update" + (force ? " --refresh" : ""))
   }
 
   function injectPanel() {
@@ -67,11 +82,13 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: ""
-    tooltipText: "Qwen voice cost — click for usage & billing"
+    text: "Q"
+    tooltipText: root.billing && root.billing.source === "aliyun"
+      ? "Qwen Voice — usage & billing"
+      : "Qwen billing unavailable — click for connection status"
     onPressed: function(b) {
       if (b === Qt.LeftButton) {
-        root.refreshData()
+        root.refreshData(true)
         root.togglePanel()
       }
     }
