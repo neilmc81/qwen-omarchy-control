@@ -66,10 +66,17 @@ def run_bin(argv: list[str], timeout: float = TIMEOUT) -> tuple[int, bytes]:
 def _ocr(png: bytes, psm: str = "3") -> tuple[int, str]:
     """tesseract over PNG bytes."""
     import tempfile
+    env = os.environ.copy()
+    # Tesseract's OpenMP worker pool livelocks under heavy system load: on this
+    # 4-core box at load ~9 every psm/lang combo hit the 25s timeout (rc=124),
+    # which surfaced as "tesseract OCR failed" from read_window/read_screen.
+    # Single-threaded (OMP_THREAD_LIMIT=1) the identical screenshot OCRs in ~11s.
+    env["OMP_THREAD_LIMIT"] = "1"
     with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
         tmp.write(png)
         tmp.flush()
-        return run(["tesseract", tmp.name, "-", "--psm", psm, "-l", "eng"], timeout=25.0)
+        return run(["tesseract", tmp.name, "-", "--psm", psm, "-l", "eng"],
+                   timeout=25.0, env=env)
 
 
 def hypr_env() -> dict | None:
