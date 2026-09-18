@@ -38,13 +38,26 @@ AGENT_TUIS = {
                  "opencode", "--auto"],
 }
 
+# Lowest precedence first: all_apps() folds these in order and lets a later
+# directory overwrite an earlier id, so the *user* dirs must come last to win.
+# XDG_DATA_DIRS is honoured (highest system precedence first).
 APP_DIRS = [
-    Path(os.environ.get("XDG_DATA_HOME", Home / ".local/share")) / "applications",
-    Home / ".local/share/applications",
-    Path("/usr/local/share/applications"),
-    Path("/usr/share/applications"),
     Path("/var/lib/flatpak/exports/share/applications"),
+    Path("/usr/share/applications"),
+    Path("/usr/local/share/applications"),
 ]
+for _data_dir in reversed(
+    [p for p in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":") if p]
+):
+    _candidate = Path(_data_dir) / "applications"
+    if _candidate not in APP_DIRS:
+        APP_DIRS.append(_candidate)
+# User-owned dirs last: they shadow system entries with the same desktop id.
+_user_dir = Path(os.environ.get("XDG_DATA_HOME", Home / ".local/share")) / "applications"
+if _user_dir not in APP_DIRS:
+    APP_DIRS.append(_user_dir)
+if Home / ".local/share/applications" not in APP_DIRS:
+    APP_DIRS.append(Home / ".local/share/applications")
 
 _OMARCHY_ROUTES = {
     "terminal": ["omarchy", "launch", "terminal"],

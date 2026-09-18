@@ -1,5 +1,6 @@
 """Tests for the cost collector (aggregation, quota, BSS signature)."""
 
+import datetime as dt
 import importlib.machinery
 import importlib.util
 import json
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 COST_SCRIPT = REPO / "bin" / "qwen-cost-update"
@@ -22,21 +24,41 @@ def load_cost():
 
 
 cost = None
+_STATE_TMP: tempfile.TemporaryDirectory | None = None
 
 
 def setUpModule():
-    global cost
+    global cost, _STATE_TMP
     cost = load_cost()
+    # Redirect every state write to a throwaway dir. Without this, the billing
+    # test writes and then *deletes* the live widget snapshot at
+    # ~/.local/state/qwen-voice/cost/billing.json.
+    _STATE_TMP = tempfile.TemporaryDirectory(prefix="qwen-cost-test-state-")
+    cost.STATE_DIR = Path(_STATE_TMP.name) / "qwen-voice" / "cost"
+
+
+def tearDownModule():
+    if _STATE_TMP is not None:
+        _STATE_TMP.cleanup()
 
 
 class AggregateTest(unittest.TestCase):
     def test_aggregate_totals(self):
+        # Rows are built relative to the current date; hard-coded dates made this
+        # test fail the moment the calendar moved past them.
+        today = dt.date.today()
+        # The last day of the previous month is always a different month, so the
+        # third row must fall outside the "this month" bucket.
+        previous_month = today.replace(day=1) - dt.timedelta(days=1)
+        # Noon UTC anchored rows; a midnight timestamp could land on a different
+        # local date than the one under test.
+        iso = lambda d, hour: f"{d.isoformat()}T{hour:02d}:00:00+00:00"
         rows = [
-            {"at": "2026-09-14T01:00:00+07:00", "model": "qwen-audio-3.0-realtime-flash",
+            {"at": iso(today, 12), "model": "qwen-audio-3.0-realtime-flash",
              "input_tokens": 100, "output_tokens": 10},
-            {"at": "2026-09-14T02:00:00+07:00", "model": "qwen-audio-3.0-realtime-flash",
+            {"at": iso(today, 13), "model": "qwen-audio-3.0-realtime-flash",
              "input_tokens": 200, "output_tokens": 20},
-            {"at": "2026-09-01T02:00:00+07:00", "model": "qwen-audio-3.0-realtime-flash",
+            {"at": iso(previous_month, 13), "model": "qwen-audio-3.0-realtime-flash",
              "input_tokens": 50, "output_tokens": 5},
         ]
         agg = cost.aggregate(rows)
@@ -44,9 +66,9 @@ class AggregateTest(unittest.TestCase):
         self.assertEqual(agg["all"]["inputTokens"], 350)
         self.assertEqual(agg["all"]["outputTokens"], 35)
         self.assertEqual(agg["all"]["totalTokens"], 385)
-        self.assertEqual(agg["month"]["responses"], 3)
+        self.assertIn(today.isoformat(), agg["daily"])
         self.assertEqual(agg["today"]["responses"], 2)
-        self.assertIn("2026-09-14", agg["daily"])
+        self.assertEqual(agg["month"]["responses"], 2)
 
     def test_aggregate_respects_rates(self):
         rates = {"qwen-audio-3.0-realtime-flash": {"inputPer1k": 1.0, "outputPer1k": 2.0}}
@@ -108,10 +130,12 @@ class LiveBillingTest(unittest.TestCase):
     def test_billing_snapshot_reused(self):
         snap = cost.billing_snapshot_path()
         snap.parent.mkdir(parents=True, exist_ok=True)
-        import datetime as _dt
+        # `month` is part of the reuse contract: read_live_billing ignores a
+        # snapshot from a different month even if it is still within the TTL.
         snap.write_text(json.dumps({
             "source": "aliyun",
-            "fetchedAt": _dt.datetime.now().isoformat(timespec="seconds"),
+            "fetchedAt": dt.datetime.now().isoformat(timespec="seconds"),
+            "month": dt.date.today().strftime("%Y-%m"),
             "balance": "12.34",
         }))
         try:

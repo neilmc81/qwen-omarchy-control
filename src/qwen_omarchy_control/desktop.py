@@ -564,17 +564,32 @@ class DesktopController:
             raise _fail(f"could not unmute: {out}")
         return "unmuted output"
 
-    def get_system_status(self) -> dict:
-        def rd(path: str) -> str:
-            try:
-                return Path(path).read_text().strip()
-            except OSError:
-                return ""
+    @staticmethod
+    def _pretty_os_name() -> str:
+        """PRETTY_NAME from /etc/os-release, or a NAME/ID fallback.
 
+        /etc/os-release is a KEY=value file, not positional. Reading line 0 and
+        stripping "PRETTY_NAME=" from it returned `NAME="Omarchy` on this
+        machine (NAME comes first).
+        """
+        try:
+            text = Path("/etc/os-release").read_text()
+        except OSError:
+            return platform.system() or "unknown"
+        fields: dict[str, str] = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            fields[key.strip()] = value.strip().strip('"').strip("'")
+        return (fields.get("PRETTY_NAME") or fields.get("NAME")
+                or fields.get("ID") or platform.system() or "unknown")
+
+    def get_system_status(self) -> dict:
         status = {
             "hostname": platform.node(),
-            "os": rd("/etc/os-release").splitlines()[0].replace("PRETTY_NAME=", "").strip('"')
-                   or "unknown",
+            "os": self._pretty_os_name(),
             "kernel": platform.release(),
             "time": _dt.datetime.now().strftime("%A %-d %B %Y, %H:%M %Z"),
         }
