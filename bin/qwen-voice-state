@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Publish the Qwen TUI's real microphone state for the Omarchy bar indicator.
+
+The stock qwen-audio-agent package does not expose the client's mute state
+anywhere: it is client-declared (`input.mute`), never echoed by the gateway, and
+absent from `/api/health`. An earlier version of this project patched the TUI's
+source under node_modules to write a state file. That broke on every
+`npm install -g qwen-audio-agent` and once duplicated code and took the gateway
+down. This reads what the TUI *already prints* instead, so nothing in the
+package is modified.
+
+The TUI renders a persistent status line plus a transient line on every
+transition; the last one visible is the truth. We only read the visible pane
+(no scrollback) and only rewrite the file when the state actually changes, so
+the bar's FileView is not woken for nothing.
+
+Output: $XDG_RUNTIME_DIR/qwen-voice/state.json (atomic, mode 600)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+SESSION = os.environ.get("QWEN_VOICE_SESSION", "qwen-voice")
+TMUX = os.environ.get("QWEN_VOICE_TMUX", "tmux")
+
+# Ordered as they can appear; the last match in the visible pane wins.
+# `语音正由` / `语音已切换` are the TUI muting itself when another client takes
+# the voice, where it does not update the persistent status line.
+MUTED_TOKENS = ("麦克风已静音", "语音正由", "语音已切换到另一窗口")
+LISTENING_TOKENS = ("麦克风已开启", "麦克风已恢复")
+
+
+def runtime_dir() -> Path:
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+
+
+def state_path() -> Path:
+    return runtime_dir() / "qwen-voice" / "state.json"
+
+
+def visible_pane() -> str | None:
+    """The TUI's currently visible output, or None if the session is gone."""
+    try:
+        proc = subprocess.run(
+            [TMUX, "capture-pane", "-t", SESSION, "-p"],
+            capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def classify_exact(pane: str | None) -> str:
+    """One of 'listening', 'muted', 'unknown', 'stopped'.
+
+    'unknown' means the TUI is up but has not rendered any microphone line yet.
+    That is *not* muted: treating it as muted once made a fresh start look
+    confirmed while the stock TUI was actually open.
+    """
+    if pane is None:
+        return "stopped"
+    last_index = -1
+    last_state = None
+    for token in MUTED_TOKENS:
+        index = pane.rfind(token)
+        if index > last_index:
+            last_index, last_state = index, "muted"
+    for token in LISTENING_TOKENS:
+        index = pane.rfind(token)
+        if index > last_index:
+            last_index, last_state = index, "listening"
+    return last_state or "unknown"
+
+
+def classify(pane: str | None) -> tuple[str, str]:
+    """(status, label) safe to publish to the bar.
+
+    'unknown' is presented as muted (dimmed) — never as listening — so the icon
+    fails safe while the TUI is still starting.
+    """
+    state = classify_exact(pane)
+    if state == "listening":
+        return "listening", "Microphone listening"
+    if state == "muted":
+        return "muted", "Microphone muted"
+    if state == "stopped":
+        return "stopped", "Voice assistant stopped"
+    return "muted", "Microphone state unknown"
+
+
+def write_if_changed(path: Path, status: str, label: str) -> bool:
+    payload = json.dumps({"status": status, "label": label}, ensure_ascii=False)
+    try:
+        if path.read_text().strip() == payload:
+            return False
+    except OSError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".state.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(payload)
+        os.chmod(name, 0o600)
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+    return True
+
+
+def current_state() -> tuple[str, str]:
+    return classify(visible_pane())
+
+
+def main(argv: list[str]) -> int:
+    pane = visible_pane()
+    raw_state = classify_exact(pane)
+    status, label = classify(pane)
+    path = state_path()
+    changed = write_if_changed(path, status, label)
+    if "--json" in argv:
+        print(json.dumps({"state": raw_state, "status": status,
+                          "label": label, "changed": changed}))
+    elif "--state" in argv:
+        print(raw_state)
+    elif "--quiet" not in argv:
+        print(f"{status}: {label}" + (" (updated)" if changed else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

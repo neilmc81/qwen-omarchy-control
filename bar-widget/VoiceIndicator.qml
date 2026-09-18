@@ -5,8 +5,9 @@ import qs.Ui
 
 // Qwen voice assistant state indicator.
 // Green mic when the assistant is listening, dimmed/dark when muted or stopped.
-// State comes from the JSON file the qwen-voice-toggle.sh script writes on
-// every microphone transition (watched live, no polling).
+// State is published by bin/qwen-voice-state from the TUI's own visible output
+// (the stock package exposes the client mute state nowhere else), refreshed by
+// bin/qwen-voice-watch.sh only when it changes. No vendor file is patched.
 // Uses the standard BarIconButton so sizing/centering matches the other icons.
 
 BarWidget {

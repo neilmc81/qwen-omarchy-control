@@ -2,9 +2,11 @@
 """qwen-cost-update: aggregate Qwen voice cost/usage into display records.
 
 Two data sources:
-  * REAL token usage: ~/.config/qwaudio/state/usage.jsonl, written by the
-    gateway (patches/patch-gateway-usage.py) one line per completed realtime
-    response (input/output tokens, characters, ...).
+  * Token usage: ~/.config/qwaudio/state/usage.jsonl, one line per completed
+    realtime response. Stock qwen-audio-agent does not write this file; it is
+    captured only when the gateway journals response.done usage itself. The
+    figures are reported as historical when capture is not running, and Alibaba
+    Cloud billing remains the authoritative live cost.
   * LIVE billing (optional): Alibaba Cloud BSS via an AccessKey stored in
     ~/.config/qwaudio/cost.json. Queries account balance + this month's bill
     (QueryAccountBalance / QueryBillOverview). Without credentials it falls
@@ -26,6 +28,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -43,7 +46,11 @@ HOME = Path.home()
 CONFIG_DIR = Path(os.environ.get("QWEN_AUDIO_CONFIG_DIR", HOME / ".config" / "qwaudio"))
 USAGE_FILE = Path(os.environ.get("QWEN_AUDIO_USAGE_FILE", CONFIG_DIR / "state" / "usage.jsonl"))
 COST_CONFIG = Path(os.environ.get("QWEN_AUDIO_COST_CONFIG", CONFIG_DIR / "cost.json"))
-STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local" / "state")) / "qwen-voice" / "cost"
+# QWEN_VOICE_COST_STATE_DIR overrides the output directory so tests and dry runs
+# never write to (or delete from) the live widget state under XDG_STATE_HOME.
+STATE_DIR = Path(os.environ.get("QWEN_VOICE_COST_STATE_DIR")
+                 or Path(os.environ.get("XDG_STATE_HOME", HOME / ".local" / "state"))
+                 / "qwen-voice" / "cost")
 
 # DashScope realtime is billed on reported tokens. Without a real price the
 # local estimate is 0 until the user fills in rates in cost.json (USD per 1K).
@@ -335,7 +342,85 @@ def aggregate(rows: list[dict]) -> dict:
         "reason": "" if used_models and all(has_complete_rate(model) for model in used_models)
                   else "No complete local price is configured for the recorded model(s).",
     }
+    # Token-level usage is no longer captured: the gateway used to be patched to
+    # journal response.done.usage, and that patch is gone (it broke on every
+    # upgrade). Alibaba's own BSS billing is authoritative; these token figures
+    # are whatever the journal held when capture stopped. Report that plainly so
+    # nobody reads a frozen number as live.
+    out["tokenCapture"] = token_capture_status()
     return out
+
+
+def _gateway_recorder_present() -> bool | None:
+    """True if the installed gateway journals response.done usage itself.
+
+    Stock qwen-audio-agent discards it. An earlier version of this project
+    patched the package to record it; that patch is gone because it broke on
+    every upgrade. If a future release journals natively (or the user runs an
+    opt-in proxy), this returns True and token figures are live. Returns None
+    when the package cannot be located, so the caller can fall back to
+    reporting the journal's last timestamp without claiming capture is running.
+    """
+    candidates = []
+    explicit = os.environ.get("QWEN_AUDIO_AGENT_ROOT")
+    if explicit:
+        candidates.append(Path(explicit))
+    shim = shutil.which("qwenaudio")
+    if shim:
+        # <root>/cli/bin/qwenaudio.mjs
+        candidates.append(Path(shim).resolve().parents[2])
+    for root in candidates:
+        provider = root / "server/src/voice/realtime-provider.mjs"
+        try:
+            return "recordResponseUsage" in provider.read_text()
+        except OSError:
+            continue
+    return None
+
+
+def _journal_last_timestamp() -> str | None:
+    if not USAGE_FILE.exists():
+        return None
+    try:
+        # Read only the tail: the journal can grow without bound.
+        with USAGE_FILE.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - 8192))
+            tail = stream.read().decode("utf-8", errors="replace")
+        for line in reversed(tail.splitlines()):
+            try:
+                at = json.loads(line).get("at")
+            except ValueError:
+                continue
+            if at:
+                parsed = dt.datetime.fromisoformat(at)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=dt.timezone.utc)
+                return parsed.isoformat(timespec="seconds")
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def token_capture_status() -> dict:
+    """Whether token-level usage is actually being recorded, and as of when.
+
+    Determined by inspecting the installed gateway, not by guessing from file
+    age: a quiet day would otherwise look identical to capture being broken.
+    """
+    last_at = _journal_last_timestamp()
+    present = _gateway_recorder_present()
+    if present is True:
+        return {"active": True, "lastAt": last_at, "reason": ""}
+    reason = ("The gateway does not journal response.done usage, so token "
+              "figures are historical. Alibaba Cloud billing is the live "
+              "figure.")
+    if present is None:
+        reason = ("Could not locate the qwen-audio-agent package to check for "
+                  "token capture; token figures are historical. Alibaba Cloud "
+                  "billing is the live figure.")
+    return {"active": False, "lastAt": last_at, "reason": reason}
 
 
 def quota_record(usage: dict) -> dict | None:
@@ -395,6 +480,7 @@ def main() -> int:
         "all": usage["all"],
         "perModel": usage["perModel"],
         "estimation": usage["estimation"],
+        "tokenCapture": usage.get("tokenCapture"),
         "quota": quota_record(usage),
         "billing": billing,
     }

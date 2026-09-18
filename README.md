@@ -62,10 +62,15 @@ qwenaudio tui
 
 ## Hotkey
 
-`SUPER + SHIFT + V` = **push-to-talk, no window**. The Qwen TUI runs hidden in a
-detached tmux session (`qwen-voice`), starting muted; each press toggles the
+`SUPER + SHIFT + V` = **push-to-talk, no window**. The stock Qwen TUI runs
+hidden in a detached tmux session (`qwen-voice`); each press toggles the
 microphone (`/m`), and a desktop notification reports the state. Replies are
 spoken through the speakers; nothing pops up on screen.
+
+The stock TUI opens the microphone on start. On first press the toggle script
+sends `/m` and then *waits for the TUI to report itself muted*; if it cannot
+confirm that, it kills the session rather than leave an open microphone. Nothing
+in the npm package is modified.
 
 - To see the TUI: `tmux attach -t qwen-voice` (leave with `Ctrl-b d`).
 - To stop the hidden TUI: `tmux kill-session -t qwen-voice`.
@@ -83,12 +88,11 @@ A mic icon sits in the top bar right after the weather widget
 (`~/.config/omarchy/plugins/qwen.voice/`, slot `qwen.voice` in `shell.json`):
 - **Green** mic = listening; **dark** mic = muted/stopped.
 - Click it to toggle the microphone (same as the hotkey).
-- State comes from `$XDG_RUNTIME_DIR/qwen-voice/state.json`. The TUI itself
-  writes that file on every mute/unmute (and on start/stop), so the icon always
-  matches what the microphone is actually doing — the toggle script only sends
-  `/m` and reads the result back. Requires the small TUI patch in
-  `patches/patch-tui.py`; re-run `python3 patches/patch-tui.py` after any
-  qwen-audio-agent upgrade (it is idempotent).
+- State comes from `$XDG_RUNTIME_DIR/qwen-voice/state.json`, written by
+  `bin/qwen-voice-state` from the TUI's own visible output (the stock package
+  exposes the client mute state nowhere else). `bin/qwen-voice-watch.sh` polls
+  and rewrites only on change, so the bar never shows a stale or invented state
+  and **no vendor file is patched**.
 - Source of the plugin is mirrored in this repo under `bar-widget/`.
 - Remove the `qwen.voice` entry from `~/.config/omarchy/shell.json` and delete
   `~/.config/omarchy/plugins/qwen.voice/` to revert.
@@ -112,10 +116,12 @@ today / this month / all-time token usage, estimated cost, a free-quota meter,
 and live Alibaba Cloud billing.
 
 How it works:
-- **Real token usage** comes from the gateway: `patches/patch-gateway-usage.py`
-  records one JSON line per completed realtime response
-  (`response.done` -> `usage`) to `~/.config/qwaudio/state/usage.jsonl`. Re-run
-  that patch after upgrading qwen-audio-agent.
+- **Live cost is Alibaba Cloud billing** (BSS), fetched by the collector. The
+  stock gateway discards `response.done` usage, so token-level figures are only
+  available if the gateway journals them itself; the panel labels them
+  "historical" when it does not, rather than passing a frozen number off as
+  live. This project no longer patches the package to add that journal — the
+  patch broke on every upgrade.
 - **Collector** `bin/qwen-cost-update` aggregates usage, computes the free-quota
   meter and (optionally) fetches live billing, and writes
   `~/.local/state/qwen-voice/cost/{overview,daily,billing}.json` for the widget
