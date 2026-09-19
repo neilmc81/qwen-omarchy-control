@@ -13,7 +13,8 @@ Panel {
   property var anchorItem: null
   property var hostWidget: null
   property var overview: null
-  property bool detailsExpanded: false
+  // Live: is the agent's mouse/keyboard input frozen? (panic flag present)
+  property bool frozen: false
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(fg, 1.45)
@@ -21,6 +22,7 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
+  readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || "/run/user/1000"
   readonly property var billing: overview && overview.billing ? overview.billing : null
   readonly property var tokenCapture: overview && overview.tokenCapture ? overview.tokenCapture : null
   readonly property bool connected: billing && billing.source === "aliyun"
@@ -33,33 +35,27 @@ Panel {
     ? "Updated " + checkedText + " · " + (billing.stale ? "Refresh failed" : "Connected")
     : "Billing connection unavailable"
 
+  // Things worth knowing without hunting through docs. Keep short and literal:
+  // the panel is narrow, and a truncated hint helps nobody.
+  readonly property var helperKeys: [
+    { keys: "SUPER+SHIFT+V",     what: "Talk / toggle mic" },
+    { keys: "SUPER+SHIFT+CTRL+V", what: "Stop the reply" },
+    { keys: "SUPER+SHIFT+ESC",   what: "Freeze agent input" }
+  ]
+
   function money(value) {
     if (value === null || value === undefined || value === "") return "—"
     return (billing && billing.currency && billing.currency !== "USD" ? billing.currency + " " : "$")
       + Number(value).toFixed(2)
   }
 
-  function detailsText() {
-    var rec = overview && overview.month ? overview.month : null
-    var lines = []
-    if (connected) {
-      lines.push("Current payable: " + money(billing.modelStudioPayable))
-      if (Number(billing.modelStudioRoundDownDiscount || 0) > 0)
-        lines.push("Alibaba applies a rounding discount.")
-      lines.push("Total cost matches Model Studio's usage overview; the payable amount includes invoice adjustments and tax.")
-      lines.push("Billing updates may be delayed. This month's bill is still accumulating.")
-    }
-    if (rec) lines.push((tokenCapture && tokenCapture.active ? "Local voice usage: " : "Historical token total: ")
-      + Number(rec.totalTokens || 0).toLocaleString()
-      + " tokens · " + Number(rec.responses || 0) + " responses")
-    if (tokenCapture && !tokenCapture.active && tokenCapture.reason)
-      lines.push(tokenCapture.reason)
-    if (modelNames.length > 1) lines.push("The total covers all Model Studio usage in this account.")
-    return lines.join("\n\n")
-  }
-
   function refresh() {
     if (root.bar) root.bar.run(root.home + "/.local/share/qwen-omarchy-control/bin/qwen-cost-update --refresh")
+  }
+
+  // Toggle the freeze flag (same script the panic hotkey runs).
+  function toggleFreeze() {
+    if (root.bar) root.bar.run(root.home + "/.local/share/qwen-omarchy-control/bin/qwen-voice-panic.sh")
   }
 
   FileView {
@@ -71,6 +67,17 @@ Panel {
       try { root.overview = JSON.parse(text()) } catch (e) { root.overview = null }
     }
     onLoadFailed: root.overview = null
+  }
+
+  // The freeze flag is a file: present = frozen. Watching it keeps the panel
+  // honest even when the hotkey is used while the panel is open.
+  FileView {
+    path: root.runtimeDir + "/qwen-voice/stop"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.frozen = true
+    onLoadFailed: root.frozen = false
   }
 
   KeyboardPanel {
@@ -170,21 +177,83 @@ Panel {
           font.pixelSize: 10
           color: root.connected && !root.billing.stale ? root.dim : "tomato"
         }
+
+        // --- Helper -------------------------------------------------------
+        Rectangle {
+          width: col.width
+          height: 1
+          color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.10)
+        }
+
         Text {
-          text: root.detailsExpanded ? "Details ▾" : "Details ▸"
+          text: "Helper"
           font.family: root.fontFamily
           font.pixelSize: 11
-          color: root.accent
+          font.bold: true
+          color: root.fg
+        }
+
+        Column {
+          width: col.width
+          spacing: 6
+
+          Repeater {
+            model: root.helperKeys
+            delegate: Row {
+              width: col.width
+              spacing: 8
+              Text {
+                width: 132
+                text: modelData.keys
+                font.family: root.fontFamily
+                font.pixelSize: 10
+                color: root.accent
+              }
+              Text {
+                text: modelData.what
+                font.family: root.fontFamily
+                font.pixelSize: 10
+                color: root.dim
+              }
+            }
+          }
+        }
+
+        // Live freeze control: click to toggle agent input, same as the hotkey.
+        Rectangle {
+          width: col.width
+          height: 30
+          radius: 4
+          color: root.frozen
+            ? Qt.rgba(0.85, 0.25, 0.25, 0.18)
+            : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.10)
+          border.width: 1
+          border.color: root.frozen
+            ? Qt.rgba(0.85, 0.25, 0.25, 0.55)
+            : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.25)
+
+          Text {
+            anchors.centerIn: parent
+            text: root.frozen ? "Agent input FROZEN — click to resume"
+                              : "Freeze agent mouse + keys"
+            font.family: root.fontFamily
+            font.pixelSize: 10
+            font.bold: root.frozen
+            color: root.frozen ? "#ff8a8a" : root.fg
+          }
           MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.detailsExpanded = !root.detailsExpanded
+            onClicked: root.toggleFreeze()
           }
         }
+
         Text {
-          visible: root.detailsExpanded
           width: col.width
-          text: root.detailsText()
+          text: "When Qwen is about to use the mouse it says so and posts a "
+              + "notification. Say \u201cstop\u201d or \u201cnever mind\u201d to "
+              + "interrupt. Ask for a control by name, e.g. \u201cclick the "
+              + "Save button\u201d."
           wrapMode: Text.WordWrap
           font.family: root.fontFamily
           font.pixelSize: 10

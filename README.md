@@ -115,8 +115,17 @@ These apply to new voice sessions (restart the gateway service to reapply).
 
 A **cost/usage dropdown** in the bar (`qwen.cost` slot, `$` icon right after the
 mic). Click it (or `omarchy shell shell summon qwen.cost`) to open a panel with
-today / this month / all-time token usage, estimated cost, a free-quota meter,
-and live Alibaba Cloud billing.
+live Alibaba Cloud billing, token usage, and a **Helper** section.
+
+The Helper section is a quick reference plus a live control:
+
+- **Hotkeys** — `SUPER+SHIFT+V` talk/toggle mic, `SUPER+SHIFT+CTRL+V` stop the
+  reply, `SUPER+SHIFT+ESC` freeze agent input.
+- **Freeze button** — toggles the same flag as the panic hotkey. It reads the
+  flag file live, so the button shows "Agent input FROZEN — click to resume"
+  whether the freeze came from the button or the key.
+- A one-line reminder that Qwen announces when it is about to use the mouse, and
+  that saying "stop" interrupts it.
 
 How it works:
 - **Live cost is Alibaba Cloud billing** (BSS), fetched by the collector. The
