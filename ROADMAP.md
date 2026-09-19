@@ -21,10 +21,10 @@ Checked live on this machine, not from docs:
 - **`invoke_menu`** — resolve a native application-menu path level by level.
   Works for conventional app menus (LibreOffice/Inkscape style); Nautilus's
   dynamic menus refuse with `menu_path_unavailable`.
-- **Typed browser tools** — `browser_prepare` → CDP gives exact DOM clicks and
-  typing (`browser_click`, `browser_type`, `browser_navigate`,
-  `browser_dialog`, `browser_download`, `browser_set_input_files`). Needs the
-  browser to be a recognized browser process.
+- **Typed browser tools** — DONE and in use: `browser_click`, `browser_type`,
+  `browser_navigate` (see #11 below). Still unused: `browser_dialog`,
+  `browser_download`, `browser_set_input_files` — downloads write files and
+  belong to the coding backend.
 - **`start_recording` / `replay_trajectory`** — record tool calls once, replay
   them in order.
 - **`drag`, `mouse_drag`, `parallel_mouse_drag`** — drag gestures.
@@ -140,14 +140,27 @@ Also measured: the model calls `describe_actions` reliably only when the focused
 window is explicitly the subject. Naming the window ("what can I do in Files?")
 is a stronger trigger than the bare phrase.
 
-### 2. Goal-level actions
-`do_gui_task("save this file")` that internally snapshots, selects, clicks,
-verifies and retries. One tool, reliable outcome, instead of exposing raw
-element targeting to the model. **Next up.** The audit log now exists to measure
-whether single verified steps are reliable enough to chain.
+### 2. Goal-level actions — PARTLY DONE (2026-09-19)
+`browser_search(query)` is the first goal-level action: one call that internally
+navigates, types, submits and verifies, and reports which step failed rather
+than claiming success. It exists because the audit log could show the primitives
+work (browser_click/browser_type verified live), which is what the roadmap asked
+for before trusting a composition. The general `do_gui_task("save this file")`
+across arbitrary apps is still open — start it now that there is one working
+composition to generalise from, and extend the audit to cover it.
 
 ### 3. Spoken outcome
 "Did it work?" → Jev reads the post-action tree and answers in one sentence.
+
+### 11. Browser without OCR — DONE (2026-09-19)
+Typed browser control is live: `browser_read`, `browser_click`, `browser_type`,
+`browser_navigate`, and the goal-level `browser_search`, all through cua-driver's
+CDP binding. Chrome is no longer an OCR-only app. Requires Chrome to expose a
+DevTools endpoint and cua-driver to hold the `existing-profile` grant; see
+README → "Typed browser control". Two traps found and fixed in the process:
+stale page refs (re-reading between choosing and clicking turns the click into a
+silent no-op) and role disambiguation ("Search" picked the combobox over the
+button).
 
 ## Tier 2 — voice-native powers
 
@@ -183,10 +196,6 @@ click. For when the user does not yet trust it.
 ### 10. Focus-lock + panic stop — DONE (see above). Remaining: freeze a
 multi-step sequence mid-flight, not just individual clicks.
 
-### 11. Browser without OCR
-`browser_prepare` → typed CDP clicks and typing. Chrome is currently an
-OCR-fallback app; this makes it exact. Enables "fill this form from my resume",
-"download the invoice".
 
 ### 12. Form-fill with Jev mapping
 Read a form's fields, Jev maps user data to each field, type, then show the user
@@ -217,12 +226,10 @@ Feed successes and failures back into better element descriptions for Jev
    outcome (#1b)~~, ~~mid-sequence freeze (#10 remainder)~~ — **done**.
 3. **Goal-level actions (#2)** — one `do_gui_task` tool. The audit log now
    provides the reliability data this needs before it is built.
-4. **Typed browser (#11)** — PARKED. Measured live: `browser_prepare` on the
-   user's running Chrome is refused (`browser_requires_setup`; existing-profile
-   attachment needs an explicit launch grant, runtime mode is `standard`). An
-   isolated driver-owned browser has no logins, so "download the invoice" does
-   not work against real accounts. Only useful for public/form pages — revisit
-   only if that is wanted. It does NOT remove the OCR fallback as hoped.
+4. ~~Typed browser (#11)~~ — **DONE**, with a correction: the earlier "parked"
+   verdict was wrong. The existing-profile route does work, via a daemon
+   startup grant plus a DevTools port on Chrome, and it drives the real
+   logged-in profile. See README → "Typed browser control".
 5. **Record/replay (#5)** — the one nobody expects from a voice assistant.
 
 Skip #6/#7/#13 until #2 is solid.

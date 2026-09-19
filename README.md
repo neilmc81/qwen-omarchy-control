@@ -183,10 +183,11 @@ backend involved), matching the level policy:
   `launch_app`, `set_volume`, `volume_up`, `volume_down`, `mute_audio`,
   `unmute_audio`, `get_audio_status`, `get_system_status`,
   `read_window`, `read_screen`, `pointer_move`, `find_element`,
-  `describe_actions`
+  `describe_actions`, `browser_read`
 - **Level 2 (careful):** `move_active_window_to_workspace`,
   `close_active_window`, `open_url`, `type_text`, `mouse_click`, `mouse_scroll`,
-  `click_element`
+  `click_element`, `browser_click`, `browser_type`, `browser_navigate`,
+  `browser_search`
 - **Confirmation gating:** `close_active_window`, `move_active_window_to_workspace`
   and `set_volume` do NOT run immediately — they return a pending action and the
   assistant asks you to confirm out loud before calling `confirm_pending`
@@ -359,6 +360,76 @@ unavailable, and the existing OCR tools remain the path
 (`~/.config/qwen-omarchy-control/vision.json`, see `share/vision.example.json`).
 Nothing here sits in the realtime voice loop; it is a tool the frontend may
 choose to call.
+
+## Typed browser control (exact, no OCR)
+
+Chrome is the window with no accessibility tree, so the element tools above
+cannot see inside it and fall back to tesseract reading a screenshot. cua-driver
+exposes a better channel for exactly this case: bind to the browser's own
+DevTools endpoint (CDP) and address real DOM elements. Five tools use it:
+
+- **`browser_read`** — read the page as real elements (role, name, value,
+  clickable) with an outline. Read-only, no pointer movement, allowed while
+  frozen. Optional `goal` narrows it.
+- **`browser_click`** — click a link/button **by name**, through the DOM. No OCR
+  and **no mouse movement**: it runs in the background, so no takeover
+  announcement is needed. It verifies the page actually changed.
+- **`browser_type`** — fill an ordinary field, found by name. NEVER for
+  passwords, payment or authentication fields.
+- **`browser_navigate`** — change the current tab's page.
+- **`browser_search`** — the goal-level action: search the web in one call
+  (navigate → type → submit → verify). Use it for "look up X".
+
+### Enabling it
+
+Two things are required, and both are deliberate:
+
+1. **Chrome must expose a DevTools endpoint.** Run
+   `bin/qwen-browser-debug.sh --enable`, which appends
+   `--remote-debugging-port=9222` to `~/.config/chrome-flags.conf` (the file
+   Omarchy's Chrome launcher already reads), then restart Chrome. `--disable`
+   removes it; `--status` checks it.
+2. **cua-driver must be started with `--grant existing-profile`**, so it may
+   attach to your *logged-in* profile. Without it the driver refuses to touch a
+   consumer profile (`consumer_profile_endpoint_requires_grant`). This is a
+   daemon-startup flag, fixed for the daemon's lifetime; there is no per-call
+   version.
+
+Without either, the tools report what is missing and the OCR path still works.
+
+### Security (read this)
+
+A loopback DevTools endpoint lets **any local process that can reach port 9222
+fully control the browser**, including reading cookies and authenticated
+sessions. It listens on `127.0.0.1` only and is never exposed to the network,
+but any program you run as this user can use it. That is why attaching to the
+logged-in profile needs an explicit grant, and why these actions are level 2.
+Turn it off with `bin/qwen-browser-debug.sh --disable` when you do not want it.
+
+### What was measured
+
+- A Chrome without the debug port is refused with
+  `browser_requires_setup ... relaunch the browser with --remote-debugging-port`.
+  The exact-window setup path also refuses here (`browser_binding_ambiguous`:
+  it cannot attribute one of a multi-window Chrome's accessibility top-levels to
+  the requested window), so the port is the supported route.
+- `browser_click`'s default `trusted` route is **refused** on this Hyprland setup
+  (`route_unavailable`), the same limitation as `click_element`.
+  `input_route: "dom_event"` works and is background-only, so that is the default
+  here — and it is a genuine win: a browser click never touches the real mouse.
+- Verified live: `browser_click "Learn more"` navigated example.com → iana.org;
+  `browser_search "omarchy linux"` landed on real DuckDuckGo results with all
+  three steps verified.
+- **A ref-validity trap, found and fixed:** page refs are invalidated by a newer
+  snapshot of the same tab. Re-reading the page between choosing a ref and
+  clicking it silently turned the click into a no-op (the driver still reported
+  the `dom` route as successful). The code now mints the target/tab pair and
+  reads the page in one sequence, then acts without re-reading.
+- **A role-disambiguation trap, found and fixed:** with the goal "Search",
+  raw name overlap picked the *combobox* "Search with DuckDuckGo" over the
+  "Search" button, so "click Search" filled the field instead of submitting.
+  Naming a role ("Search button", "the search field") now weights the matching
+  role.
 
 ## Pre-dispatch agent triage (dormant, off by default)
 

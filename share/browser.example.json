@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy to ~/.config/qwen-omarchy-control/browser.json (0600). Controls typed browser control (browser_read/click/type/navigate/search) via cua-driver's CDP binding. On by default; self-degrades to a clear message when no debug-enabled browser is present. Two prerequisites: Chrome must run with --remote-debugging-port (see bin/qwen-browser-debug.sh --enable) and cua-driver serve must have been started with --grant existing-profile.",
+  "enabled": true,
+  "driver": "cua-driver",
+  "enableWayland": true,
+  "driverTimeoutMs": 45000,
+  "session": "qwen",
+  "clickRoute": "dom_event",
+  "maxElements": 60,
+  "searchEngine": "https://duckduckgo.com",
+  "audit": true
+}

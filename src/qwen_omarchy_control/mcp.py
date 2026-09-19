@@ -15,10 +15,9 @@ import sys
 import traceback
 import uuid
 
-from . import panic, triage, vision
+from . import browser, panic, triage, vision
 from .desktop import DesktopController, DesktopError
-from .policy import PolicyError
-
+from .policy import PolicyError, reject_sensitive_text
 PROTOCOL_VERSION = "2025-06-18"
 
 SERVER_INFO = {"name": "qwen-omarchy-control", "version": "0.1.0"}
@@ -336,6 +335,94 @@ TOOLS = [
         },
     },
     {
+        "name": "browser_read",
+        "description": "Read the current browser page as real DOM elements (role, "
+                       "name, clickable) instead of OCR. Use this whenever the "
+                       "browser is the window in question - it is exact where "
+                       "read_screen guesses. Read-only, no mouse movement, and "
+                       "allowed while the freeze is set. Optional `goal` narrows "
+                       "the result (e.g. 'the search box'). Level 1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string",
+                         "description": "What you are looking for on the page, e.g. "
+                                        "'the search box' or 'the Download link'."},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "browser_click",
+        "description": "Click a link/button on the current browser page by its "
+                       "name, via the browser's own DOM (no OCR, no pointer "
+                       "movement - it runs in the background, so no takeover "
+                       "announcement is needed). Use this instead of "
+                       "click_element for anything inside Chrome. It verifies the "
+                       "result (URL/title) and reports `verified` honestly. "
+                       "Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string",
+                         "description": "What to click, e.g. 'the Download link' "
+                                        "or 'Sign in'."},
+            },
+            "required": ["goal"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "browser_type",
+        "description": "Type text into a field on the current browser page (found "
+                       "by name), via the DOM - no pointer movement. Use for "
+                       "search boxes and ordinary forms. NEVER use it for "
+                       "passwords, payment or authentication fields. Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Literal text to type."},
+                "goal": {"type": "string",
+                         "description": "Which field, e.g. 'the search box'. Omit "
+                                        "for the page's only text field."},
+                "replace": {"type": "boolean", "default": False,
+                            "description": "True to replace the field's current "
+                                           "contents instead of appending."},
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "browser_navigate",
+        "description": "Navigate the browser's tab to an http(s) URL. Prefer "
+                       "open_url to open a new page; use this to change the page "
+                       "the agent is already working in. Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "browser_search",
+        "description": "Search the web and land on the results page, in one step. "
+                       "Prefer this over opening a search engine and driving it "
+                       "manually: it navigates, types the query, submits, and "
+                       "verifies the results page actually loaded. Use for 'look "
+                       "up X', 'search for X', 'google X'. Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "What to search for."},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "confirm_pending",
         "description": "Run the action that is waiting for confirmation (returned by a "
                        "gated tool as {\"pending\": ...}). Call this after the user "
@@ -356,7 +443,7 @@ class McpHandler:
     READ_ONLY = frozenset({
         "get_active_window", "list_windows", "list_workspaces", "get_monitors",
         "get_audio_status", "get_system_status", "read_window", "read_screen",
-        "find_element", "describe_actions",
+        "find_element", "describe_actions", "browser_read",
     })
 
     def __init__(self) -> None:
@@ -510,6 +597,33 @@ class McpHandler:
             return vision.describe_actions(
                 str(args["window"]) if args.get("window") else None,
             )
+        if name == "browser_read":
+            return browser.browser_read(
+                str(args["goal"]) if args.get("goal") else None,
+            )
+        if name == "browser_click":
+            return browser.browser_click(str(args["goal"]))
+        if name == "browser_type":
+            text = str(args.get("text") or "")
+            if reject_sensitive_text(text):
+                raise PolicyError(
+                    "refused: text looks sensitive (password/secret/card). The "
+                    "voice assistant never types into sensitive fields."
+                )
+            return browser.browser_type(
+                text,
+                goal=str(args["goal"]) if args.get("goal") else None,
+                replace=bool(args.get("replace", False)),
+            )
+        if name == "browser_navigate":
+            return browser.browser_navigate(str(args["url"]))
+        if name == "browser_search":
+            query = str(args.get("query") or "")
+            if reject_sensitive_text(query):
+                raise PolicyError(
+                    "refused: the query looks sensitive (password/secret/card)."
+                )
+            return browser.browser_search(query)
         if name == "click_element":
             return vision.click_element(
                 str(args["goal"]),

@@ -93,6 +93,26 @@
           "enabled": true,
           "description": "Answer 'what can I do here?' for a window: read its accessibility tree and name the 3-5 meaningful actions (open, save, send, delete, navigate), best first. Read-only, no click. Use when the user asks what they can do in the current window, or what is on screen, or to orient before clicking."
         },
+        "browser_read": {
+          "enabled": true,
+          "description": "Read the current browser page as real DOM elements (role, name, clickable) instead of OCR. Exact where read_screen guesses. Read-only, no mouse movement. Use whenever the browser is the window in question; optional goal narrows it (e.g. 'the search box')."
+        },
+        "browser_click": {
+          "enabled": true,
+          "description": "Click a link/button on the current browser page by name, through the browser's own DOM. No OCR and no pointer movement - it runs in the background, so no takeover announcement is needed. Use this instead of click_element for anything inside Chrome. Verifies URL/title and reports verified honestly."
+        },
+        "browser_type": {
+          "enabled": true,
+          "description": "Type text into a field on the current browser page, found by name (or the only text field). No pointer movement. Use for search boxes and ordinary forms; NEVER for password, payment or authentication fields."
+        },
+        "browser_navigate": {
+          "enabled": true,
+          "description": "Navigate the browser's current tab to an http(s) URL. Prefer open_url for opening a new page; use this to change the page the agent is already working in."
+        },
+        "browser_search": {
+          "enabled": true,
+          "description": "Search the web and land on the results page in one step: navigates, types the query, submits, and verifies the results loaded. Prefer this over driving a search engine manually. Use for 'look up X', 'search for X', 'google X'."
+        },
         "click_element": {
           "enabled": true,
           "description": "Find a UI element by name and click it via the accessibility tree. Moves the real mouse and takes focus for a moment - announce this to the user first. double=true opens an item."

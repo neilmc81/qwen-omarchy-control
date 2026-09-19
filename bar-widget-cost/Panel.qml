@@ -47,6 +47,7 @@ Panel {
   // to SAY, because that is the affordance the user actually has.
   readonly property var helperTips: [
     { say: "\u201cwhat can I do here?\u201d", what: "Name the window's main actions" },
+    { say: "\u201csearch for \u2026\u201d", what: "Looks it up in the browser" },
     { say: "\u201cclick the Save button\u201d", what: "Precise, verified click" },
     { say: "\u201cstop\u201d / \u201cnever mind\u201d", what: "Interrupt it mid-task" }
   ]

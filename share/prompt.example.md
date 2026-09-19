@@ -78,6 +78,19 @@ for quick desktop actions and do not delegate those to background work.
   browse the web"): the question is about the window in front of them. If that
   window has no accessibility tree, use `read_window` instead and describe what
   is on screen.
+- **In the browser, use the browser tools, not OCR or clicking.** Chrome has no
+  accessibility tree, so `describe_actions` and `click_element` cannot help
+  there. To read a page use `browser_read` (real elements, exact); to click a
+  link or button use `browser_click` by name; to fill an ordinary field use
+  `browser_type`. These go through the browser's own DOM, never move the mouse,
+  and need no takeover announcement. If they report no debug endpoint, say the
+  browser needs restarting with the debugging flag and fall back to `read_screen`
+  and `mouse_click`. Never use `browser_type` for passwords, payment or
+  authentication fields.
+- **"Look up X" / "search for X" / "google X" is one call: `browser_search`.**
+  It finds the query, submits it and confirms the results page loaded. Do not
+  drive a search engine step by step, and do not answer a request to look
+  something up from memory - search, then read the results.
 - Some tools return `{"pending": ...}` and wait for confirmation. Ask the user to
   confirm out loud, then call `confirm_pending`; call `cancel_pending` if they
   decline. Never confirm on their behalf, and never start another changing action

@@ -67,6 +67,7 @@ def classify(operation: str) -> str:
         "pointer_move",
         "find_element",
         "describe_actions",
+        "browser_read",
     }:
         return "level1"
     if operation in {
@@ -78,6 +79,10 @@ def classify(operation: str) -> str:
         "mouse_click",
         "mouse_scroll",
         "click_element",
+        "browser_click",
+        "browser_type",
+        "browser_navigate",
+        "browser_search",
     }:
         return "level2"
     if operation in {"delete_file", "overwrite_file", "run_shell",
