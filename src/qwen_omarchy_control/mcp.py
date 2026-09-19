@@ -294,7 +294,10 @@ TOOLS = [
                        "MOVES THE REAL MOUSE AND TAKES FOCUS for a moment: a desktop "
                        "notification announces it, so tell the user you are taking "
                        "control and to leave the mouse and keyboard alone until you "
-                       "say it is done. Use for a control with a clear label; for a "
+                       "say it is done. It verifies the result and retries once; the "
+                       "reply's `verified` field says whether the outcome was "
+                       "confirmed - report that honestly to the user rather than "
+                       "assuming success. Use for a control with a clear label; for a "
                        "canvas/custom-drawn surface use read_screen + mouse_click. "
                        "Level 2.",
         "inputSchema": {

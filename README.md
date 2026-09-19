@@ -216,7 +216,7 @@ want the visible agent every time, say "use hermes to ..." explicitly. Avoid
 literal `/paths` in spoken requests (the Qwen TUI treats absolute paths as file
 attachments).
 
-## Precise element targeting (dormant, off by default)
+## Precise element targeting (on by default, self-degrading)
 
 The OCR tools guess at pixels: tesseract reads a screenshot and a click lands on
 a coordinate. The desktop already exposes a structured accessibility (AT-SPI)
@@ -231,25 +231,52 @@ tree, so there is no need to guess. Two extra tools use it:
 cua-driver get_window_state   ->  candidates (role, label, index, frame)
 Jev (System One)              ->  pick exactly one supplied candidate, +confidence
 code                          ->  focus window, move pointer to frame, ydotool click
+                                  then re-read the window to verify the outcome
 ```
 
 The model chooses among supplied candidates only — it never invents an element
 or a coordinate — and code decides whether the confidence is high enough.
 
+**Verify, then report honestly.** After a click the window is re-read and
+compared with its state beforehand; the result is returned as `verified`,
+`verification` and `verification_reason`. `unsatisfied` means no change was
+observable — not necessarily that the click failed (a list selection may not be
+exposed in the tree) — but the assistant is told to report what actually
+happened rather than assume success.
+
+**Retries are off by default, deliberately.** A retry is a *second* click: on a
+single click that becomes a double-click (which navigates or opens), and on a
+button it can submit twice. Measured live: clicking a folder selects it, but
+grid-cell selection is not in the tree, so verification correctly saw "no
+observable change" — and an automatic retry would have silently double-clicked.
+Raise `retries` only for a target known to be idempotent.
+
 **Why the click is delivered by ydotool, not cua-driver.** Measured on this
 Hyprland session: cua-driver's accessibility click fails on native Wayland
 windows (`X11 error TranslateCoordinates`), and its background/foreground routes
 report `background_unavailable` / `foreground_unavailable` ("production
-Hyprland input plugin is unavailable"). Its AT-SPI *reads* are perfect and its
+Hyprland input plugin is unavailable"). Its AT-SPI *reads* are reliable and its
 element frames are screen-absolute, so targeting comes from Cua and delivery
-uses the project's existing input path. Verified end-to-end: a Jev-selected
-"Documents" cell changed the Nautilus window title from `Home` to `Documents`.
+uses the project's existing input path.
 
-Disabled by default (`~/.config/qwen-omarchy-control/vision.json`, see
-`share/vision.example.json`). When disabled — or when cua-driver, the key or the
-accessibility tree is unavailable — the tools return a clear error and the
-existing OCR tools remain the path. Nothing here sits in the realtime voice
-loop; it is a tool the frontend may choose to call.
+The assistant is instructed to **say out loud** that it is taking control before
+a click, and a desktop notification announces it too, because the real mouse
+moves and focus is taken.
+
+### Panic stop
+
+`SUPER + SHIFT + ESCAPE` toggles a stop flag
+(`$XDG_RUNTIME_DIR/qwen-voice/stop`). While it is set, `click_element` refuses
+before touching the pointer. The same key clears it, and a notification reports
+which way the toggle went. `find_element` still works while stopped — the agent
+may look, it just may not act.
+
+Enabled by default and needing no config file: the tools self-degrade to a clear
+error when cua-driver, the API key, or the window's accessibility tree is
+unavailable, and the existing OCR tools remain the path
+(`~/.config/qwen-omarchy-control/vision.json`, see `share/vision.example.json`).
+Nothing here sits in the realtime voice loop; it is a tool the frontend may
+choose to call.
 
 ## Pre-dispatch agent triage (dormant, off by default)
 

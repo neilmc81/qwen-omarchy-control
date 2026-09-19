@@ -31,13 +31,33 @@ Checked live on this machine, not from docs:
 - **`clipboard_read` / `clipboard_write`** — exact clipboard values (no OCR).
 - **`set_window_frame`** — exact window geometry with readback.
 
-## Tier 1 — fix the biggest gap first
+## Done
 
-### 1. Verify-then-retry
-`click_element` currently reports "clicked", not "it worked". After an action,
-check the result with `verify_state` (or a Jev Noul over the fresh tree):
-satisfied → done; not → retry once → report honestly. This is the difference
-between "I clicked Save" and "it saved".
+### 1. Verify-then-retry — DONE (2026-09-19)
+`click_element` re-reads the window after a click and reports `verified` /
+`verification` / `verification_reason`. Two things came out of building it:
+
+- An "element exists" predicate is NOT usable for verification: the element we
+  clicked necessarily existed before the click, so `verify_state` reported
+  success unconditionally (measured: it did exactly that for "the Music
+  folder"). Verification compares before/after window state instead.
+- **Automatic retries default to 0.** A retry is a second click; on a single
+  click that becomes a double-click and navigates, and on a button it can submit
+  twice. Measured live: clicking a folder selects it, but grid-cell selection is
+  not exposed, so verification sees "no change" and a retry would have
+  double-clicked. `retries` is now an explicit opt-in for idempotent targets.
+
+### 10. Panic stop — DONE (2026-09-19)
+`SUPER + SHIFT + ESCAPE` toggles `$XDG_RUNTIME_DIR/qwen-voice/stop`.
+`click_element` checks it before touching the pointer, and between steps.
+`find_element` still works while stopped (look, don't act).
+
+## Tier 1 — remaining
+
+### 1b. Jev-verified outcome for non-expressible cases
+The current check is a state diff. When the change is real but subtle (a value
+changed inside a field with no label change), ask Jev a Noul over the fresh tree:
+"did the intended outcome happen?" Keep it off the hot path.
 
 ### 2. Goal-level actions
 `do_gui_task("save this file")` that internally snapshots, selects, clicks,
@@ -78,10 +98,8 @@ layout and closes what the agent opened. A safety net for computer use.
 "Walk me through it first" — Jev narrates each step, waits for "go" before each
 click. For when the user does not yet trust it.
 
-### 10. Focus-lock + panic stop
-A hotkey that freezes the agent mid-sequence and returns the mouse. Extend
-`bin/qwen-voice-stop.sh` to computer use. Worth having before anything
-ambitious, because the takeover is real (the agent moves the actual cursor).
+### 10. Focus-lock + panic stop — DONE (see above). Remaining: freeze a
+multi-step sequence mid-flight, not just individual clicks.
 
 ### 11. Browser without OCR
 `browser_prepare` → typed CDP clicks and typing. Chrome is currently an
@@ -112,13 +130,29 @@ Feed successes and failures back into better element descriptions for Jev
 
 ## Suggested build order
 
-1. **Verify-then-retry (#1)** — small, upgrades the feature already in use.
-2. **Panic stop (#10)** — because the takeover is real.
+1. ~~Verify-then-retry (#1)~~ and ~~panic stop (#10)~~ — **done**.
+2. **Typed browser (#11)** — removes the biggest remaining OCR fallback
+   (Chrome currently has no accessibility tree).
 3. **"What can I do here?" (#4)** — highest delight per line of code.
 4. **Record/replay (#5)** — the one nobody expects from a voice assistant.
-5. **Typed browser (#11)** — removes the biggest remaining OCR fallback.
+5. **Trajectory audit (#14)** — needed before trusting longer sequences.
 
-Skip #6/#7/#13 until #1 is solid.
+Skip #6/#7/#13 until #1b is solid.
+
+## Observations from building #1
+
+- **Nautilus segfaulted three times** during interactive testing (SIGSEGV in
+  the GTK4 **Vulkan** renderer, `libvulkan_intel_hasvk.so` on this Broadwell
+  GPU, via `gsk_renderer_render`). Idle windows and repeated accessibility
+  reads/screenshots did NOT reproduce it, so the trigger looks like
+  GTK4+Vulkan rendering on this hardware rather than the Cua/Jev path — but it
+  was not fully isolated. If it recurs, try `GSK_RENDERER=ngl` (or `gl`) for the
+  affected app, which is a GTK-side workaround, not something this repo owns.
+- Grid-cell `selected` state is not exposed by Nautilus's AT-SPI tree, which is
+  why a single click on a folder cannot be verified. This is a real ceiling:
+  verify only what the tree actually publishes.
+- cua-driver's `kill_app` refuses to terminate a process it did not launch
+  (`foreign_process_termination_denied`), so cleanup uses `pkill` during tests.
 
 ## Hard constraints (carry forward)
 

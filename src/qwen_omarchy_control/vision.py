@@ -70,9 +70,28 @@ DEFAULT_CONFIG = {
     "driver": "cua-driver",
     # cua-driver 0.28.2 needs its Wayland backend enabled on Hyprland.
     "enableWayland": True,
+    # Verify the outcome of a click so the result is reported honestly.
+    "verify": True,
+    "verifyDelayMs": 600,
+    # Automatic retries default to 0, and that is a safety decision, not a
+    # placeholder. A retry is a SECOND click: on a single click that becomes a
+    # double-click (which navigates or opens), and on a button it can submit
+    # twice. Measured live: clicking a folder selects it, but grid-cell
+    # selection is not exposed in the tree, so verification correctly reports
+    # "no observable change" and a retry would have silently double-clicked.
+    # Raise this only for a target known to be idempotent.
+    "retries": 0,
 }
 
 CONFIG_HOME = triage.CONFIG_HOME
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+
+# Panic stop: while this file exists, no input is delivered. The hotkey
+# (SUPER + SHIFT + ESCAPE) creates it; the agent checks it before every click.
+PANIC_FILE = Path(os.environ.get(
+    "QWEN_VISION_PANIC_FILE", RUNTIME_DIR / "qwen-voice" / "stop"
+))
+
 CONFIG_FILE = Path(os.environ.get(
     "QWEN_VISION_CONFIG", CONFIG_HOME / "qwen-omarchy-control" / "vision.json"
 ))
@@ -372,7 +391,11 @@ def available(cfg: dict | None = None) -> tuple[bool, str]:
 
 def find_element(goal: str, window_hint: str | None = None,
                  cfg: dict | None = None) -> dict:
-    """Locate the element that satisfies `goal`. Raises VisionError otherwise."""
+    """Locate the element that satisfies `goal`. Raises VisionError otherwise.
+
+    Read-only, so the panic flag does not block it: the agent may still look at
+    the screen while stopped, it just may not act.
+    """
     cfg = cfg or load_config()
     ok, reason = available(cfg)
     if not ok:
@@ -426,9 +449,94 @@ def _notify(summary: str, body: str, urgency: str = "normal") -> None:
         pass
 
 
+# --- panic stop -----------------------------------------------------------
+
+
+def panicked() -> bool:
+    """True while the user has hit the panic-stop hotkey."""
+    try:
+        return PANIC_FILE.exists()
+    except OSError:
+        return False
+
+
+def clear_panic() -> bool:
+    """Remove the panic flag. Returns True if it had been set."""
+    try:
+        PANIC_FILE.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+
+def _panic_error() -> VisionError:
+    return VisionError(
+        "stopped by the panic key (SUPER + SHIFT + ESCAPE); no input was sent. "
+        "Press the key again to clear it and carry on."
+    )
+
+
+def _window_fingerprint(cfg: dict, pid: int, window_id: int) -> dict | None:
+    """A comparable view of a window: title, and each element's label + state.
+
+    Selection and enabled state are included on purpose: clicking a list row or
+    folder usually only changes its selected flag, and a fingerprint of labels
+    alone would call that "nothing changed" and retry a click that worked.
+
+    Returns None when the window cannot be read at all (it closed, or cua-driver
+    failed), so "gone" stays distinguishable from "empty". Never raises: a
+    verification step must degrade to 'unknown', never to a false success.
+    """
+    try:
+        tree = _run_driver(cfg, "get_window_state", {
+            "pid": pid, "window_id": window_id, "include_screenshot": False,
+        })
+    except VisionError:
+        return None
+    elements = sorted(
+        (
+            str(e.get("label") or ""),
+            bool(e.get("selected", False)),
+            bool(e.get("enabled", True)),
+        )
+        for e in (tree.get("elements") or [])
+    )
+    return {
+        "title": str(tree.get("window_title") or ""),
+        "elements": elements,
+        "count": len(elements),
+    }
+
+
+def _verify_outcome(before: dict | None, after: dict | None) -> tuple[str, str]:
+    """Compare two fingerprints -> ('satisfied'|'unsatisfied'|'unknown', why).
+
+    State comparison is the only honest signal for a click. An "element exists"
+    predicate is NOT usable here: the element we clicked necessarily existed
+    before the click, so it would report success unconditionally. (Measured: it
+    did exactly that for "the Music folder".)
+
+    A window that has gone away is 'unknown', not failure: closing a dialog is a
+    common, intended result of a click, and cua-driver cannot prove whether it
+    happened or the app crashed.
+    """
+    if after is None:
+        return "unknown", "the window is gone (it may have closed as intended)"
+    if before is None:
+        return "unknown", "could not read the window state before the click"
+    if before.get("title") != after.get("title"):
+        return "satisfied", f"window changed to {after.get('title')!r}"
+    if before.get("elements") != after.get("elements"):
+        return "satisfied", "the window's contents or selection changed"
+    return "unsatisfied", "nothing about the window changed"
+
+
 def click_element(goal: str, window_hint: str | None = None,
-                  cfg: dict | None = None, double: bool = False) -> dict:
-    """Find the element for `goal` and click it.
+                  cfg: dict | None = None, double: bool = False,
+                  verify: bool | None = None) -> dict:
+    """Find the element for `goal`, click it, and verify the outcome.
 
     This TAKES OVER the real mouse and keyboard focus for a moment. A desktop
     notification announces that before the first input is sent, so the user
@@ -446,10 +554,19 @@ def click_element(goal: str, window_hint: str | None = None,
         cua-driver  -> which element, and where
         ydotool     -> deliver the click
 
-    Verified: a Jev-selected "Documents" cell, clicked this way, changed the
-    Nautilus window title from "Home" to "Documents".
+    After the click the window is re-read and compared with the state before it,
+    and the result is reported in `verified` / `verification` /
+    `verification_reason`. `unsatisfied` means no change was observable; it does
+    NOT necessarily mean the click failed (a list selection may not be exposed
+    in the tree), but the caller must not claim success.
+
+    Retries are OFF by default. A retry is a second click; see the `retries`
+    comment in DEFAULT_CONFIG for why that is unsafe in general. The panic key
+    (SUPER + SHIFT + ESCAPE) suppresses any input while it is set.
     """
     cfg = cfg or load_config()
+    if panicked():
+        raise _panic_error()
     found = find_element(goal, window_hint, cfg)
 
     from .desktop import DesktopController
@@ -469,23 +586,63 @@ def click_element(goal: str, window_hint: str | None = None,
             "Don't use the mouse or keyboard for a moment.",
         )
 
-    # Focus the target first: ydotool delivers to the focused surface.
-    try:
-        class_hint = found.get("window_class") or found.get("window_title") or ""
-        if class_hint:
-            controller.focus_window(class_hint)
-    except Exception:  # noqa: BLE001 - focus is best-effort; click still tries
-        pass
-    time.sleep(0.4)
-    controller.pointer_move(x, y)
-    time.sleep(0.25)
-    if double:
-        effect = _double_click()
-    else:
-        effect = controller.mouse_click("left")
-    return {**found, "clicked_at": [x, y], "effect": effect,
-            "double": double, "delivery": "ydotool",
-            "takeover": "announced" if cfg.get("announceTakeover", True) else "silent"}
+    should_verify = cfg.get("verify", True) if verify is None else verify
+    attempts = 1 + (int(cfg.get("retries", 0)) if should_verify else 0)
+    settle = max(0.0, float(cfg.get("verifyDelayMs", 600)) / 1000.0)
+
+    before = _window_fingerprint(cfg, found["pid"], found["window_id"]) \
+        if should_verify else {}
+
+    outcome, reason = "unknown", "verification disabled"
+    for attempt in range(1, attempts + 1):
+        if panicked():
+            raise _panic_error()
+        # Focus the target first: ydotool delivers to the focused surface.
+        try:
+            class_hint = found.get("window_class") or found.get("window_title") or ""
+            if class_hint:
+                controller.focus_window(class_hint)
+        except Exception:  # noqa: BLE001 - focus is best-effort; click still tries
+            pass
+        time.sleep(0.4)
+        controller.pointer_move(x, y)
+        time.sleep(0.25)
+        if double:
+            effect = _double_click()
+        else:
+            effect = controller.mouse_click("left")
+
+        if not should_verify:
+            outcome, reason = "unknown", "verification disabled"
+            break
+
+        time.sleep(settle)
+        after = _window_fingerprint(cfg, found["pid"], found["window_id"])
+        outcome, reason = _verify_outcome(before, after)
+        if outcome != "unsatisfied" or attempt >= attempts:
+            # satisfied, unknown, or out of retries: stop and report honestly.
+            break
+        # Otherwise retry once: re-read so a moved element is re-targeted.
+        try:
+            found = find_element(goal, window_hint, cfg)
+            frame = found.get("frame") or {}
+            x = int(frame["x"]) + int(frame["w"]) // 2
+            y = int(frame["y"]) + int(frame["h"]) // 2
+        except VisionError:
+            break
+
+    return {
+        **found,
+        "clicked_at": [x, y],
+        "effect": effect,
+        "double": double,
+        "delivery": "ydotool",
+        "takeover": "announced" if cfg.get("announceTakeover", True) else "silent",
+        "verified": outcome == "satisfied",
+        "verification": outcome,
+        "verification_reason": reason,
+        "attempts": attempt,
+    }
 
 
 def _double_click() -> str:

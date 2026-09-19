@@ -204,6 +204,9 @@ class DriverTest(unittest.TestCase):
         with mock.patch.object(vision, "find_element", return_value=found), \
                 mock.patch.object(vision, "load_config", return_value=self.cfg), \
                 mock.patch.object(vision, "_notify") as notify, \
+                mock.patch.object(vision, "_window_fingerprint",
+                                  side_effect=[{"title": "Home", "elements": []},
+                                               {"title": "Documents", "elements": []}]), \
                 mock.patch("qwen_omarchy_control.desktop.DesktopController",
                            return_value=controller), \
                 mock.patch("time.sleep"):
@@ -217,6 +220,9 @@ class DriverTest(unittest.TestCase):
         notify.assert_called_once()
         self.assertIn("taking control", notify.call_args[0][0].lower())
         self.assertEqual(result["takeover"], "announced")
+        # The outcome was verified from a real state change.
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["verification"], "satisfied")
 
     def test_takeover_announcement_can_be_silenced(self):
         found = {"pid": 7, "window_id": 42, "window_title": "Home",
@@ -232,12 +238,77 @@ class DriverTest(unittest.TestCase):
         with mock.patch.object(vision, "find_element", return_value=found), \
                 mock.patch.object(vision, "load_config", return_value=cfg), \
                 mock.patch.object(vision, "_notify") as notify, \
+                mock.patch.object(vision, "_window_fingerprint",
+                                  side_effect=[{"title": "A", "elements": []},
+                                               {"title": "A", "elements": []}]), \
                 mock.patch("qwen_omarchy_control.desktop.DesktopController",
                            return_value=controller), \
                 mock.patch("time.sleep"):
             result = vision.click_element("x", "nautilus")
         notify.assert_not_called()
         self.assertEqual(result["takeover"], "silent")
+        # No observable change is reported honestly, not as success.
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["verification"], "unsatisfied")
+        # And no second click: retries are off by default.
+        controller.mouse_click.assert_called_once()
+        self.assertEqual(result["attempts"], 1)
+
+
+class VerifyOutcomeTest(unittest.TestCase):
+    def test_title_change_satisfied(self):
+        outcome, reason = vision._verify_outcome(
+            {"title": "Home", "elements": []},
+            {"title": "Documents", "elements": []})
+        self.assertEqual(outcome, "satisfied")
+        self.assertIn("Documents", reason)
+
+    def test_element_or_selection_change_satisfied(self):
+        before = {"title": "Home", "elements": [("Music. Folder", False, True)]}
+        after = {"title": "Home", "elements": [("Music. Folder", True, True)]}
+        outcome, _ = vision._verify_outcome(before, after)
+        self.assertEqual(outcome, "satisfied")
+
+    def test_no_change_unsatisfied(self):
+        same = {"title": "Home", "elements": [("a", False, True)]}
+        outcome, reason = vision._verify_outcome(same, dict(same))
+        self.assertEqual(outcome, "unsatisfied")
+        self.assertIn("nothing", reason)
+
+    def test_vanished_window_is_unknown_not_failure(self):
+        outcome, reason = vision._verify_outcome({"title": "H", "elements": []}, None)
+        self.assertEqual(outcome, "unknown")
+        self.assertIn("gone", reason)
+
+    def test_unreadable_before_is_unknown(self):
+        outcome, _ = vision._verify_outcome(None, {"title": "H", "elements": []})
+        self.assertEqual(outcome, "unknown")
+
+
+class PanicTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old = vision.PANIC_FILE
+        vision.PANIC_FILE = Path(self._tmp.name) / "stop"
+
+    def tearDown(self):
+        vision.PANIC_FILE = self._old
+        self._tmp.cleanup()
+
+    def test_panic_blocks_click_before_touching_mouse(self):
+        vision.PANIC_FILE.write_text("")
+        self.assertTrue(vision.panicked())
+        with mock.patch("qwen_omarchy_control.desktop.DesktopController") as ctrl:
+            with self.assertRaises(vision.VisionError) as ctx:
+                vision.click_element("the Save button")
+        self.assertIn("panic", str(ctx.exception))
+        ctrl.assert_not_called()
+
+    def test_clear_panic(self):
+        vision.PANIC_FILE.write_text("")
+        self.assertTrue(vision.clear_panic())
+        self.assertFalse(vision.panicked())
+        self.assertFalse(vision.clear_panic())
 
 
 if __name__ == "__main__":

@@ -1,6 +1,10 @@
 {
-  "_comment": "Copy to ~/.config/qwen-omarchy-control/vision.json (0600). Controls precise element targeting for find_element/click_element. Default is disabled: the tools report that they are unavailable and the OCR tools remain the path.",
-  "enabled": false,
+  "_comment": "Copy to ~/.config/qwen-omarchy-control/vision.json (0600). Controls precise element targeting for find_element/click_element. These tools are on by default and self-degrade to a clear 'unavailable' message (missing cua-driver, key, or accessibility tree), so no config file is needed to use them. Set \"enabled\": false only to remove the capability.",
+  "enabled": true,
+  "announceTakeover": true,
+  "verify": true,
+  "verifyDelayMs": 600,
+  "retries": 0,
   "minConfidence": 0.6,
   "maxCandidates": 40,
   "timeoutMs": 12000,
