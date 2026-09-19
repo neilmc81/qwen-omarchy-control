@@ -119,6 +119,27 @@ The rule: **routing in `PROMPT.md`, persona in `ASSISTANT.md`, never the
 reverse.** `tests/test_mcp.py::FrontendAllowlistTest` pins surfaces 1-2;
 `share/prompt.example.md` and `share/assistant.example.md` track surface 3.
 
+### And: a long-lived realtime session anchors on its own history
+
+Even after all three surfaces were correct, the *already-running* session kept
+answering the old way. Verified live: told explicitly to "use describe_actions",
+the session called it and produced the right answer - but the bare phrase "what
+can I do here?" still returned the previous generic reply, because the session
+had answered that exact phrase generically six times already and the realtime
+model conditions on its recent turns. After restarting the TUI (fresh session),
+the same bare phrase called `describe_actions`, hit "no accessibility tree" on
+Chrome, and fell back to `read_screen` - correct end to end.
+
+So: **a prompt or tool change needs a fresh session to be observable.** Waiting
+for a reconnect is not enough - `PROMPT.md` is re-read on every `buildSession`,
+but the conversation history that anchors the model is restored into the new
+connection. Restart the TUI (`bin/qwen-voice-toggle.sh` after killing the tmux
+session) when changing behaviour, not just the gateway.
+
+Also measured: the model calls `describe_actions` reliably only when the focused
+window is explicitly the subject. Naming the window ("what can I do in Files?")
+is a stronger trigger than the bare phrase.
+
 ### 2. Goal-level actions
 `do_gui_task("save this file")` that internally snapshots, selects, clicks,
 verifies and retries. One tool, reliable outcome, instead of exposing raw
