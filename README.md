@@ -382,20 +382,49 @@ DevTools endpoint (CDP) and address real DOM elements. Five tools use it:
 
 ### Enabling it
 
-Two things are required, and both are deliberate:
+Two things are required, and both are deliberate. `bin/qwen-browser-debug.sh
+--enable` does the first; `--status` checks both; `--disable` reverses the first.
 
-1. **Chrome must expose a DevTools endpoint.** Run
-   `bin/qwen-browser-debug.sh --enable`, which appends
-   `--remote-debugging-port=9222` to `~/.config/chrome-flags.conf` (the file
-   Omarchy's Chrome launcher already reads), then restart Chrome. `--disable`
-   removes it; `--status` checks it.
+1. **Chrome must expose a DevTools endpoint on a non-default data directory.**
+   That is not paranoia, it is Chrome 153's rules, measured on this machine:
+
+   - `--remote-debugging-port` alone is refused:
+     *"DevTools remote debugging requires a non-default data directory."*
+   - Passing `--user-data-dir` pointing at the ordinary `~/.config/google-chrome`
+     is **still** refused — Chrome canonicalises the path.
+   - The `RemoteDebuggingAllowed` managed policy is respected but does **not**
+     lift this: with the policy `false` Chrome says *"disallowed by the system
+     admin"*, and with it `true` it still demands a non-default directory. So no
+     policy setting makes the default path eligible.
+   - A directory of symlinks to the real profile **starts a second Chrome**,
+     because each path gets its own `SingletonLock` — two instances writing one
+     profile. **Do not do this; it risks corruption.** (Tested, then removed.)
+
+   The working route is a **bind mount**: the real profile is mounted at a
+   non-default path (`~/.config/google-chrome-qwen`), and Chrome is launched with
+   `--user-data-dir` pointing at the mount. Both paths share one `SingletonLock`,
+   so a normal `google-chrome-stable` launch **hands off** to the debug instance
+   (*"Opening in existing browser session"*) — one process, one profile. The
+   script creates the mount, adds a `nofail` fstab entry so it survives reboots,
+   and writes both flags. The mount is the same inode as the real profile, so it
+   is genuinely the logged-in data (verified: identical inode and cookie count).
+
 2. **cua-driver must be started with `--grant existing-profile`**, so it may
    attach to your *logged-in* profile. Without it the driver refuses to touch a
    consumer profile (`consumer_profile_endpoint_requires_grant`). This is a
    daemon-startup flag, fixed for the daemon's lifetime; there is no per-call
-   version.
+   version. The project ships a systemd user unit
+   (`share/cua-driver.service`) that starts the daemon with the grant and
+   restarts it on failure — install it so a reboot does not silently disable
+   every accessibility and browser tool:
 
-Without either, the tools report what is missing and the OCR path still works.
+   ```
+   cp share/cua-driver.service ~/.config/systemd/user/
+   systemctl --user daemon-reload
+   systemctl --user enable --now cua-driver.service
+   ```
+
+Without these, the tools report what is missing and the OCR path still works.
 
 ### Security (read this)
 
@@ -404,7 +433,9 @@ fully control the browser**, including reading cookies and authenticated
 sessions. It listens on `127.0.0.1` only and is never exposed to the network,
 but any program you run as this user can use it. That is why attaching to the
 logged-in profile needs an explicit grant, and why these actions are level 2.
-Turn it off with `bin/qwen-browser-debug.sh --disable` when you do not want it.
+Turn the port off with `bin/qwen-browser-debug.sh --disable`, and withdraw the
+grant with `systemctl --user disable --now cua-driver.service`, when you do not
+want them.
 
 ### What was measured
 

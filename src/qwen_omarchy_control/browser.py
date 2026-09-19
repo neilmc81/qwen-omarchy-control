@@ -268,12 +268,19 @@ def _prepare(cfg: dict, window: dict) -> None:
     existing-profile`), not a per-call one; without it the driver refuses to
     touch a consumer profile. This is an explicit, user-authorised attachment to
     the logged-in browser, which is why browser actions are level 2.
+
+    A named session can *end* (the driver reports "session '<label>' has ended"
+    and refuses every later call). Ordinary actions never revive an ended name,
+    so `start_session` is called first; it is idempotent and returns the live
+    session when one already exists.
     """
+    session = str(cfg.get("session") or "qwen")
+    _run_driver(cfg, "start_session", {"session": session})
     _run_driver(cfg, "browser_prepare", {
         "pid": int(window["pid"]),
         "window_id": int(window["window_id"]),
         "strategy": {"kind": "existing_profile"},
-        "session": str(cfg.get("session") or "qwen"),
+        "session": session,
     })
 
 

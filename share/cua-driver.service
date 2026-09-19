@@ -1,0 +1,33 @@
+[Unit]
+# cua-driver: the accessibility/CDP driver behind find_element, describe_actions,
+# click_element and the typed browser tools.
+#
+# WHY A UNIT AND NOT A BARE PROCESS
+# The daemon is started on demand in some setups, but this project needs it
+# started with `--grant existing-profile`: that grant is a *startup* flag and is
+# fixed for the daemon's lifetime, so a daemon that starts without it cannot
+# attach to the logged-in browser at all (it refuses with
+# `consumer_profile_endpoint_requires_grant`). Without this unit, a reboot left
+# the vision/browser tools dead until someone noticed.
+#
+# The grant authorises attaching to the real, logged-in Chrome profile - which
+# is exactly why browser actions are level 2 and why the DevTools port is bound
+# to loopback only. Remove `--grant existing-profile` (or stop this unit) to
+# withdraw that capability; the accessibility tools keep working without it.
+Description=Cua accessibility/CDP driver (existing-profile grant)
+Documentation=file://%h/.local/share/qwen-omarchy-control/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# Wayland is required for the accessibility and frame reads on Hyprland.
+Environment=CUA_DRIVER_RS_ENABLE_WAYLAND=1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# The grant is the whole point of owning this unit; see the note above.
+ExecStart=%h/.local/bin/cua-driver serve --grant existing-profile
+Restart=on-failure
+RestartSec=3
+# Best-effort: the browser tools degrade cleanly without it.
+[Install]
+WantedBy=graphical-session.target
