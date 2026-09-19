@@ -44,7 +44,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import triage
+from . import panic, triage
 
 # --- config ---------------------------------------------------------------
 
@@ -87,6 +87,12 @@ DEFAULT_CONFIG = {
     # "no observable change" and a retry would have silently double-clicked.
     # Raise this only for a target known to be idempotent.
     "retries": 0,
+    # #1b: when the state diff sees no change, ask Jev a yes/no question over the
+    # before/after trees to catch a real-but-subtle success (e.g. a value changed
+    # inside an unlabelled field). Dormant by default, per the measure-first rule:
+    # turn it on once the audit log shows how often the unsatisfied branch is hit.
+    "jevOutcome": False,
+    "jevOutcomeThreshold": 0.70,
 }
 
 CONFIG_HOME = triage.CONFIG_HOME
@@ -399,6 +405,67 @@ def select(cfg: dict, goal: str, window: dict, candidates: list[Candidate]) -> d
     }
 
 
+def _ask_yes_no(cfg: dict, state: str, instructions: str) -> dict:
+    """One yes/no Noul question over `state` via the same Jev transport."""
+    questions = {"yes": {"type": "noul", "instructions": instructions}}
+    jev_cfg = dict(triage.load_config())
+    for key in ("model", "endpoint", "apiKeyEnv"):
+        jev_cfg[key] = cfg.get(key) or jev_cfg.get(key)
+    try:
+        return triage.ask(state, questions, jev_cfg)
+    except triage.TriageError as exc:
+        raise VisionError(f"outcome model unavailable: {exc}")
+
+
+def verify_outcome_jev(cfg: dict, goal: str, before: dict | None,
+                       after: dict | None) -> tuple[str, str]:
+    """Ask Jev whether the intended outcome happened, over the fresh tree.
+
+    The state diff is the primary signal and is right most of the time. It is
+    blind to a real-but-subtle change: a value that changed inside a field whose
+    label did not, for instance. When the diff says nothing changed, this asks a
+    single yes/no question over the before/after trees so a subtle success is not
+    reported as a failure.
+
+    It is a disambiguator, not a hot path: it runs only on the `unsatisfied`
+    branch, and any failure (no key, timeout, malformed answer) degrades to the
+    original `unsatisfied` verdict rather than inventing a success.
+    """
+    if not before or not after:
+        return "unsatisfied", "nothing about the window changed"
+    state = json.dumps({
+        "goal": goal,
+        "before": _tree_view(before),
+        "after": _tree_view(after),
+    }, ensure_ascii=False)
+    try:
+        payload = _ask_yes_no(
+            cfg, state,
+            "A desktop agent clicked an element to accomplish the stated goal. "
+            "Comparing the window before and after the click, did the intended "
+            "outcome happen, even if the change is subtle?",
+        )
+    except VisionError:
+        return "unsatisfied", "nothing about the window changed"
+    probability = float((payload.get("answers") or {}).get("yes", {}).get("noul") or 0.0)
+    threshold = float(cfg.get("jevOutcomeThreshold", 0.7))
+    if probability >= threshold:
+        return (
+            "satisfied",
+            f"no visible change but the outcome model judged it done ({probability:.2f})",
+        )
+    return (
+        "unsatisfied",
+        f"nothing about the window changed (outcome model: {probability:.2f})",
+    )
+
+
+def _tree_view(fingerprint: dict) -> dict:
+    """A compact, model-readable view of a fingerprint (labels only)."""
+    labels = [entry[0] for entry in (fingerprint.get("elements") or []) if entry[0]]
+    return {"title": fingerprint.get("title") or "", "labels": labels[:60]}
+
+
 # --- public API -----------------------------------------------------------
 
 
@@ -467,6 +534,109 @@ def find_element(goal: str, window_hint: str | None = None,
     }
 
 
+# --- "what can I do here?" -------------------------------------------------
+
+
+def _rank_actions(cfg: dict, window: dict, candidates: list[Candidate]) -> list[dict]:
+    """Ask Jev which 3-5 candidates are the meaningful actions, in order.
+
+    One choice question over the same candidate list `select` uses: the model
+    picks the option that names the most useful actions rather than inventing
+    prose. Code owns how many are kept and how they are presented.
+    """
+    criteria = {
+        c.to_id(): c.description for c in candidates
+    }
+    criteria["none"] = "None of these is a meaningful action"
+    questions = {
+        "actions": {
+            "type": "choice",
+            "instructions": (
+                f"Window: {window.get('title') or window.get('app_name') or 'unknown'}. "
+                "Which of these elements are the meaningful things a user would "
+                "recognise as the main actions here (open, save, send, delete, "
+                "navigate)?"
+            ),
+            "criteria": criteria,
+        },
+    }
+    jev_cfg = dict(triage.load_config())
+    for key in ("model", "endpoint", "apiKeyEnv"):
+        jev_cfg[key] = cfg.get(key) or jev_cfg.get(key)
+    state = json.dumps({
+        "window_title": str(window.get("title") or window.get("app_name") or ""),
+        "elements": [
+            {"id": c.to_id(), "role": c.role, "label": c.label,
+             "enabled": c.enabled}
+            for c in candidates
+        ],
+    }, ensure_ascii=False)
+    return triage.ask(state, questions, jev_cfg)
+
+
+def describe_actions(window_hint: str | None = None,
+                     cfg: dict | None = None) -> dict:
+    """Answer "what can I do here?" - read a window and name its main actions.
+
+    Read-only, so it is allowed while the panic freeze is set: looking is always
+    permitted even when acting is not. It never clicks and never moves the mouse.
+    """
+    cfg = cfg or load_config()
+    ok, reason = available(cfg)
+    if not ok:
+        raise VisionError(reason)
+
+    started = time.monotonic()
+    window = resolve_window(cfg, window_hint)
+    pid = window.get("pid")
+    window_id = window.get("window_id")
+    if pid is None or window_id is None:
+        raise VisionError("resolved window has no pid/window_id")
+    try:
+        tree = _run_driver(cfg, "get_window_state", {
+            "pid": pid, "window_id": window_id, "include_screenshot": False,
+        })
+    except VisionError as exc:
+        raise VisionError(f"could not read this window: {exc}")
+    if tree.get("degraded"):
+        raise VisionError(
+            "this window has no accessibility tree; use read_screen instead"
+        )
+    candidates, _ = candidates_from_tree(tree, cfg)
+    if not candidates:
+        raise VisionError("no labelled controls were found in this window")
+
+    payload = _rank_actions(cfg, window, candidates)
+    answers = payload.get("answers") or {}
+    chosen = answers.get("actions") or {}
+    # Jev's choice tells us the best action first; the ranked probabilities give
+    # the rest without a second call. Fall back to tree order if it is silent.
+    probabilities = chosen.get("probabilities") or {}
+    ordered = sorted(
+        candidates,
+        key=lambda c: float(probabilities.get(c.to_id()) or 0.0),
+        reverse=True,
+    )
+    top = [c for c in ordered if probabilities.get(c.to_id()) is not None][:5]
+    if not top:
+        top = ordered[:5]
+
+    return {
+        "window_title": window.get("title"),
+        "window_class": window.get("class") or window.get("app_name"),
+        "actions": [
+            {"id": c.to_id(), "role": c.role, "label": c.label,
+             "enabled": c.enabled}
+            for c in top
+        ],
+        "top_action": chosen.get("choice"),
+        "confidence": round(float(chosen.get("confidence") or 0.0), 3),
+        "candidate_count": len(candidates),
+        "cost_usd": float((payload.get("usage") or {}).get("cost") or 0.0),
+        "elapsed_s": round(time.monotonic() - started, 2),
+    }
+
+
 def _notify(summary: str, body: str, urgency: str = "normal") -> None:
     """Best-effort desktop notification. Never raises into the action path."""
     try:
@@ -479,6 +649,12 @@ def _notify(summary: str, body: str, urgency: str = "normal") -> None:
 
 
 # --- panic stop -----------------------------------------------------------
+#
+# The flag is the same file `panic` (and therefore every input path) uses. These
+# kept module-local so a test or caller can point `vision.PANIC_FILE` at a
+# scratch path without touching the process-wide flag.
+
+PANIC_FILE = panic.PANIC_FILE
 
 
 def panicked() -> bool:
@@ -649,6 +825,11 @@ def click_element(goal: str, window_hint: str | None = None,
         time.sleep(settle)
         after = _window_fingerprint(cfg, found["pid"], found["window_id"])
         outcome, reason = _verify_outcome(before, after)
+        if outcome == "unsatisfied" and cfg.get("jevOutcome"):
+            # The diff is blind to a subtle change; let Jev disambiguate. It only
+            # ever upgrades unsatisfied -> satisfied (never downgrades a real
+            # change), so this cannot lose a verified success.
+            outcome, reason = verify_outcome_jev(cfg, goal, before, after)
         if outcome != "unsatisfied" or attempt >= attempts:
             # satisfied, unknown, or out of retries: stop and report honestly.
             break
@@ -661,8 +842,9 @@ def click_element(goal: str, window_hint: str | None = None,
         except VisionError:
             break
 
-    return {
+    result = {
         **found,
+        "goal": goal,
         "clicked_at": [x, y],
         "effect": effect,
         "double": double,
@@ -673,6 +855,10 @@ def click_element(goal: str, window_hint: str | None = None,
         "verification_reason": reason,
         "attempts": attempt,
     }
+    if cfg.get("audit", True):
+        from . import audit
+        audit.log_click(result)
+    return result
 
 
 def _double_click() -> str:

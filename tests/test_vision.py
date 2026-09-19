@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from qwen_omarchy_control import triage, vision
+from qwen_omarchy_control import audit, triage, vision
 
 
 def tree(*elements, snapshot="s00000001"):
@@ -110,9 +110,12 @@ class DriverTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self._old_log = triage.LOG_FILE
         triage.LOG_FILE = Path(self._tmp.name) / "t.jsonl"
+        self._old_audit = audit.LOG_FILE
+        audit.LOG_FILE = Path(self._tmp.name) / "trajectory.jsonl"
 
     def tearDown(self):
         triage.LOG_FILE = self._old_log
+        audit.LOG_FILE = self._old_audit
         self._tmp.cleanup()
 
     def _patch_run(self, payloads):
@@ -319,12 +322,115 @@ class ThrottleTest(unittest.TestCase):
         sleep.assert_not_called()
 
 
+class JevOutcomeTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = dict(vision.DEFAULT_CONFIG)
+
+    def _before_after(self):
+        return ({"title": "Editor", "elements": [("Name:", False, True)]},
+                {"title": "Editor", "elements": [("Name:", False, True)]})
+
+    def test_upgrades_subtle_success(self):
+        payload = {"answers": {"yes": {"noul": 0.92}}}
+        before, after = self._before_after()
+        with mock.patch.object(vision, "_ask_yes_no", return_value=payload):
+            outcome, reason = vision.verify_outcome_jev(
+                self.cfg, "save the file", before, after)
+        self.assertEqual(outcome, "satisfied")
+        self.assertIn("outcome model", reason)
+
+    def test_keeps_unsatisfied_below_threshold(self):
+        payload = {"answers": {"yes": {"noul": 0.30}}}
+        before, after = self._before_after()
+        with mock.patch.object(vision, "_ask_yes_no", return_value=payload):
+            outcome, _ = vision.verify_outcome_jev(
+                self.cfg, "save the file", before, after)
+        self.assertEqual(outcome, "unsatisfied")
+
+    def test_failure_degrades_to_unsatisfied_never_success(self):
+        before, after = self._before_after()
+        with mock.patch.object(vision, "_ask_yes_no",
+                               side_effect=vision.VisionError("no key")):
+            outcome, reason = vision.verify_outcome_jev(
+                self.cfg, "save the file", before, after)
+        self.assertEqual(outcome, "unsatisfied")
+        self.assertIn("nothing about the window changed", reason)
+
+    def test_missing_fingerprint_does_not_call_model(self):
+        with mock.patch.object(vision, "_ask_yes_no") as ask:
+            outcome, _ = vision.verify_outcome_jev(self.cfg, "g", None, None)
+        self.assertEqual(outcome, "unsatisfied")
+        ask.assert_not_called()
+
+    def test_jev_outcome_is_off_by_default(self):
+        self.assertFalse(vision.DEFAULT_CONFIG["jevOutcome"])
+
+
+class DescribeActionsTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = dict(vision.DEFAULT_CONFIG, enabled=True)
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_log = triage.LOG_FILE
+        triage.LOG_FILE = Path(self._tmp.name) / "t.jsonl"
+        self._old_audit = audit.LOG_FILE
+        audit.LOG_FILE = Path(self._tmp.name) / "trajectory.jsonl"
+
+    def tearDown(self):
+        triage.LOG_FILE = self._old_log
+        audit.LOG_FILE = self._old_audit
+        self._tmp.cleanup()
+
+    def _patch_run(self, payloads):
+        queue = list(payloads)
+
+        def fake_run(argv, **kwargs):
+            proc = mock.Mock()
+            proc.returncode = 0
+            proc.stdout = queue.pop(0) if queue else "{}"
+            proc.stderr = ""
+            return proc
+
+        return mock.patch("subprocess.run", side_effect=fake_run)
+
+    def test_names_main_actions_best_first(self):
+        windows = json.dumps({"windows": [
+            {"pid": 7, "window_id": 42, "title": "Inkscape", "app_name": "inkscape",
+             "is_on_screen": True}]})
+        state = json.dumps(tree(
+            element(0, "push button", "Save"),
+            element(1, "push button", "Export"),
+            element(2, "filler", "decorative", actions=()),
+        ))
+        jev = {"answers": {"actions": {
+            "choice": "e1", "confidence": 0.9,
+            "probabilities": {"e1": 0.9, "e0": 0.6, "none": 0.01},
+        }}, "usage": {"cost": 0.00002}}
+        with self._patch_run([windows, state]), \
+                mock.patch.object(vision, "_rank_actions", return_value=jev):
+            result = vision.describe_actions("inkscape", cfg=self.cfg)
+        labels = [a["label"] for a in result["actions"]]
+        self.assertEqual(labels[0], "Export")   # highest probability first
+        self.assertIn("Save", labels)
+        self.assertNotIn("decorative", labels)
+        self.assertEqual(result["top_action"], "e1")
+        self.assertEqual(result["window_class"], "inkscape")
+
+    def test_degraded_tree_reports_fallback(self):
+        windows = json.dumps({"windows": [
+            {"pid": 7, "window_id": 42, "title": "Chrome", "app_name": "chrome",
+             "is_on_screen": True}]})
+        degraded = json.dumps({"degraded": True, "elements": []})
+        with self._patch_run([windows, degraded]):
+            with self.assertRaises(vision.VisionError) as ctx:
+                vision.describe_actions("chrome", cfg=self.cfg)
+        self.assertIn("accessibility tree", str(ctx.exception))
+
+
 class PanicTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self._old = vision.PANIC_FILE
         vision.PANIC_FILE = Path(self._tmp.name) / "stop"
-
     def tearDown(self):
         vision.PANIC_FILE = self._old
         self._tmp.cleanup()

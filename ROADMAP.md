@@ -52,6 +52,36 @@ Checked live on this machine, not from docs:
 `click_element` checks it before touching the pointer, and between steps.
 `find_element` still works while stopped (look, don't act).
 
+**Extended (2026-09-19):** the flag now lives in `panic.py` and is honoured by
+*every* input path, not just `click_element` — the OCR path (`pointer_move`,
+`mouse_click`, `mouse_scroll`, `type_text`) was previously ungated, so a
+multi-step sequence kept the mouse and keyboard live after the panic key. Each
+call checks on entry, so a sequence stops at its next step. Read-only tools stay
+available. A **Freeze agent mouse + keys** button in the `qwen.cost` panel
+toggles the same flag.
+
+### 4. "What can I do here?" — DONE (2026-09-19)
+`vision.describe_actions` reads a window's tree and Jev ranks the meaningful
+actions (best first); exposed as the read-only `describe_actions` MCP tool
+(level 1) and `desktop-control actions --window <pid|title>`. Never clicks.
+Verified live against Nautilus. (Chrome/foot/Electron are `degraded` as known.)
+
+### 14. Trajectory audit — DONE (2026-09-19)
+Every `click_element` appends one NDJSON record to
+`~/.local/state/qwen-omarchy-control/trajectory.jsonl` (goal, app, outcome,
+attempts, latency, cost; mode 0600, unknown fields dropped so a credential cannot
+leak in). Log-only, never raises into the action path.
+`desktop-control audit stats|review`. `unsatisfied` is not counted as failure —
+the summary keeps `verifiable_rate` and `success_rate_of_verifiable` separate,
+which is what the #1 finding (unexposed selection state) requires.
+
+### 1b. Jev-verified outcome for non-expressible cases — DONE (2026-09-19)
+`verify_outcome_jev`: on an `unsatisfied` diff, one yes/no Jev question over the
+before/after trees. Only upgrades `unsatisfied` → `satisfied`; any failure keeps
+the original verdict. Off by default (`jevOutcome: false`) so the audit log can
+measure the branch before it is trusted. Exercised live (returned a real
+probability, correctly kept a negative case unsatisfied).
+
 ## Tier 1 — remaining
 
 ### 1b. Jev-verified outcome for non-expressible cases
@@ -59,10 +89,13 @@ The current check is a state diff. When the change is real but subtle (a value
 changed inside a field with no label change), ask Jev a Noul over the fresh tree:
 "did the intended outcome happen?" Keep it off the hot path.
 
+**DONE (2026-09-19)** — see above.
+
 ### 2. Goal-level actions
 `do_gui_task("save this file")` that internally snapshots, selects, clicks,
 verifies and retries. One tool, reliable outcome, instead of exposing raw
-element targeting to the model.
+element targeting to the model. **Next up.** The audit log now exists to measure
+whether single verified steps are reliable enough to chain.
 
 ### 3. Spoken outcome
 "Did it work?" → Jev reads the post-action tree and answers in one sentence.
@@ -131,13 +164,19 @@ Feed successes and failures back into better element descriptions for Jev
 ## Suggested build order
 
 1. ~~Verify-then-retry (#1)~~ and ~~panic stop (#10)~~ — **done**.
-2. **Typed browser (#11)** — removes the biggest remaining OCR fallback
-   (Chrome currently has no accessibility tree).
-3. **"What can I do here?" (#4)** — highest delight per line of code.
-4. **Record/replay (#5)** — the one nobody expects from a voice assistant.
-5. **Trajectory audit (#14)** — needed before trusting longer sequences.
+2. ~~Trajectory audit (#14)~~, ~~"What can I do here?" (#4)~~, ~~Jev-verified
+   outcome (#1b)~~, ~~mid-sequence freeze (#10 remainder)~~ — **done**.
+3. **Goal-level actions (#2)** — one `do_gui_task` tool. The audit log now
+   provides the reliability data this needs before it is built.
+4. **Typed browser (#11)** — PARKED. Measured live: `browser_prepare` on the
+   user's running Chrome is refused (`browser_requires_setup`; existing-profile
+   attachment needs an explicit launch grant, runtime mode is `standard`). An
+   isolated driver-owned browser has no logins, so "download the invoice" does
+   not work against real accounts. Only useful for public/form pages — revisit
+   only if that is wanted. It does NOT remove the OCR fallback as hoped.
+5. **Record/replay (#5)** — the one nobody expects from a voice assistant.
 
-Skip #6/#7/#13 until #1b is solid.
+Skip #6/#7/#13 until #2 is solid.
 
 ## Nautilus crashes during testing — investigated 2026-09-19
 

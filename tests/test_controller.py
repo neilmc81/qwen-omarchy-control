@@ -163,7 +163,7 @@ class ControllerTest(unittest.TestCase):
                 self.ctrl.mouse_scroll("down")
 
     def test_mouse_click_builds_argv(self):
-        with mock.patch.object(desktop.Path, "exists", return_value=True):
+        with mock.patch.object(DesktopController, "_ydotool_ready", return_value=True):
             self.ctrl.mouse_click("right", double=True)
             argv = desktop.run.call_args.args[0]
             self.assertEqual(argv, ["ydotool", "click", "--repeat", "2", "0xC1"])
@@ -171,7 +171,7 @@ class ControllerTest(unittest.TestCase):
     def test_mouse_scroll_points_then_wheels(self):
         self.fake.active = {"address": "0xbbb", "class": "org.omarchy.terminal",
                             "at": [0, 0], "size": [800, 600]}
-        with mock.patch.object(desktop.Path, "exists", return_value=True), \
+        with mock.patch.object(DesktopController, "_ydotool_ready", return_value=True), \
              mock.patch.object(desktop, "_dispatch") as dispatch:
             desktop.run.side_effect = [(0, "ok"), (0, "ok")]
             self.ctrl.mouse_scroll("up", pages=1)

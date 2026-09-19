@@ -246,6 +246,13 @@ code                          ->  focus window, move pointer to frame, ydotool c
 The model chooses among supplied candidates only — it never invents an element
 or a coordinate — and code decides whether the confidence is high enough.
 
+**"What can I do here?"** The same tree powers a read-only `describe_actions`
+tool: it reads a window and names the 3–5 meaningful actions in it (best first),
+so the user can ask what is available instead of hunting for a button. It never
+clicks or moves the mouse and stays available while the panic freeze is set —
+looking is always allowed. Try it from the CLI with
+`desktop-control actions --window <pid-or-title>`.
+
 **Verify, then report honestly.** After a click the window is re-read and
 compared with its state beforehand; the result is returned as `verified`,
 `verification` and `verification_reason`. `unsatisfied` means no change was
@@ -253,12 +260,36 @@ observable — not necessarily that the click failed (a list selection may not b
 exposed in the tree) — but the assistant is told to report what actually
 happened rather than assume success.
 
+**When the diff is blind (opt-in).** A state diff cannot see a value that changed
+inside an unlabelled field whose label did not. With `jevOutcome: true`, an
+`unsatisfied` result triggers one yes/no Jev question over the before/after trees
+to catch that subtle success. It only ever upgrades `unsatisfied` → `satisfied`
+(never the reverse), any failure degrades to the original verdict, and it is off
+by default so it can be measured first — see the audit log below.
+
 **Retries are off by default, deliberately.** A retry is a *second* click: on a
 single click that becomes a double-click (which navigates or opens), and on a
 button it can submit twice. Measured live: clicking a folder selects it, but
 grid-cell selection is not in the tree, so verification correctly saw "no
 observable change" — and an automatic retry would have silently double-clicked.
 Raise `retries` only for a target known to be idempotent.
+
+**Every action is logged.** Each `click_element` appends one NDJSON record
+(goal, app, outcome, attempts, latency, cost) to
+`~/.local/state/qwen-omarchy-control/trajectory.jsonl`. This is log-only and
+never changes behaviour; it is the "measure before trust" rule applied to GUI
+actions. Read it with:
+
+```
+desktop-control audit stats     # success rate per app
+desktop-control audit review    # recent actions
+```
+
+`unsatisfied` is deliberately **not** counted as a failure: a working Nautilus
+selection is invisible to the tree, so the summary reports `satisfied`,
+`unsatisfied` and `unknown` separately, plus `verifiable_rate` (how often the app
+exposes enough state for success to be provable) and
+`success_rate_of_verifiable` (of the provable cases, how many succeeded).
 
 **Why the click is delivered by ydotool, not cua-driver.** Measured on this
 Hyprland session: cua-driver's accessibility click fails on native Wayland
@@ -272,13 +303,18 @@ The assistant is instructed to **say out loud** that it is taking control before
 a click, and a desktop notification announces it too, because the real mouse
 moves and focus is taken.
 
-### Panic stop
+### Panic stop (freezes the whole input path, mid-sequence)
 
 `SUPER + SHIFT + ESCAPE` toggles a stop flag
-(`$XDG_RUNTIME_DIR/qwen-voice/stop`). While it is set, `click_element` refuses
-before touching the pointer. The same key clears it, and a notification reports
-which way the toggle went. `find_element` still works while stopped — the agent
-may look, it just may not act.
+(`$XDG_RUNTIME_DIR/qwen-voice/stop`). While it is set, **every** path that
+delivers input refuses — not just `click_element`, but the OCR path too
+(`pointer_move`, `mouse_click`, `mouse_scroll`, `type_text`). Because each tool
+call checks the flag on entry, a multi-step sequence stops at its next step even
+though the steps are separate calls. The same key clears it, and a notification
+reports which way the toggle went. Read-only tools (`find_element`,
+`describe_actions`, `read_screen`) still work while stopped — the agent may look,
+it just may not act. The same toggle is available from the `qwen.cost` bar panel
+as a **Freeze agent mouse + keys** button.
 
 Enabled by default and needing no config file: the tools self-degrade to a clear
 error when cua-driver, the API key, or the window's accessibility tree is

@@ -43,6 +43,14 @@ Panel {
     { keys: "SUPER+SHIFT+ESC",   what: "Freeze agent input" }
   ]
 
+  // Voice capabilities added alongside the computer-use work. Phrased as what
+  // to SAY, because that is the affordance the user actually has.
+  readonly property var helperTips: [
+    { say: "\u201cwhat can I do here?\u201d", what: "Name the window's main actions" },
+    { say: "\u201cclick the Save button\u201d", what: "Precise, verified click" },
+    { say: "\u201cstop\u201d / \u201cnever mind\u201d", what: "Interrupt it mid-task" }
+  ]
+
   function money(value) {
     if (value === null || value === undefined || value === "") return "—"
     return (billing && billing.currency && billing.currency !== "USD" ? billing.currency + " " : "$")
@@ -248,12 +256,49 @@ Panel {
           }
         }
 
+        // Voice tips: the capabilities added with the computer-use work.
+        Text {
+          text: "Try saying"
+          font.family: root.fontFamily
+          font.pixelSize: 11
+          font.bold: true
+          color: root.fg
+        }
+
+        Column {
+          width: col.width
+          spacing: 6
+
+          Repeater {
+            model: root.helperTips
+            delegate: Column {
+              width: col.width
+              spacing: 0
+              Text {
+                width: col.width
+                text: modelData.say
+                wrapMode: Text.WordWrap
+                font.family: root.fontFamily
+                font.pixelSize: 10
+                color: root.accent
+              }
+              Text {
+                width: col.width
+                text: modelData.what
+                wrapMode: Text.WordWrap
+                font.family: root.fontFamily
+                font.pixelSize: 9
+                color: root.dim
+              }
+            }
+          }
+        }
+
         Text {
           width: col.width
-          text: "When Qwen is about to use the mouse it says so and posts a "
-              + "notification. Say \u201cstop\u201d or \u201cnever mind\u201d to "
-              + "interrupt. Ask for a control by name, e.g. \u201cclick the "
-              + "Save button\u201d."
+          text: "Qwen announces before it uses the mouse, and only clicks "
+              + "controls it can name. Every action is verified; it reports "
+              + "honestly when it cannot confirm the result."
           wrapMode: Text.WordWrap
           font.family: root.fontFamily
           font.pixelSize: 10

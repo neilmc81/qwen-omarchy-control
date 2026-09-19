@@ -66,6 +66,7 @@ def classify(operation: str) -> str:
         "read_screen",
         "pointer_move",
         "find_element",
+        "describe_actions",
     }:
         return "level1"
     if operation in {

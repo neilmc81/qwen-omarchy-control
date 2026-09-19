@@ -69,6 +69,38 @@ def cmd_triage(args) -> int:
     return 2
 
 
+def cmd_audit(args) -> int:
+    from . import audit
+    rows = audit.read_log(limit=args.limit)
+    if args.action == "stats":
+        print(json.dumps(audit.summarize(rows), indent=2))
+        return 0
+    for row in rows:
+        print(f"{row.get('ts','')}  {str(row.get('outcome')):<11} "
+              f"app={str(row.get('app') or 'unknown'):<18} "
+              f"{(row.get('goal') or '')[:60]}")
+        if args.verbose:
+            print(f"    reason: {row.get('reason','')}")
+    if not rows:
+        print(f"no GUI actions recorded yet ({audit.LOG_FILE})")
+    return 0
+
+
+def cmd_actions(args) -> int:
+    from . import vision
+    try:
+        result = vision.describe_actions(args.window)
+    except vision.VisionError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"{(result.get('window_title') or 'window')}: "
+          f"{len(result['actions'])} action(s)")
+    for action in result["actions"]:
+        marker = "->" if action["id"] == result.get("top_action") else "  "
+        print(f"  {marker} {action['role']:<12} {action['label']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="desktop-control")
     sub = parser.add_subparsers(dest="command")
@@ -94,6 +126,17 @@ def main(argv: list[str] | None = None) -> int:
     stats_p = triage_sub.add_parser("stats", help="verdict counts")
     stats_p.add_argument("--limit", type=int, default=1000)
 
+    audit_p = sub.add_parser("audit", help="trajectory audit of GUI actions")
+    audit_sub = audit_p.add_subparsers(dest="action", required=True)
+    audit_stats = audit_sub.add_parser("stats", help="success counts per app")
+    audit_stats.add_argument("--limit", type=int, default=2000)
+    audit_review = audit_sub.add_parser("review", help="show recent actions")
+    audit_review.add_argument("--limit", type=int, default=30)
+    audit_review.add_argument("-v", "--verbose", action="store_true")
+
+    actions_p = sub.add_parser("actions", help="what can I do in a window?")
+    actions_p.add_argument("--window", help="target window (pid or title substring)")
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -107,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             "volume_up", "volume_down", "mute_audio", "unmute_audio",
             "get_audio_status", "get_system_status",
             "move_active_window_to_workspace", "close_active_window",
-            "open_url", "type_text",
+            "open_url", "type_text", "find_element", "describe_actions",
         ]).items()):
             rows.append(f"{op[0]:<38} {op[1]}")
         print("\n".join(rows))
@@ -118,6 +161,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "triage":
         return cmd_triage(args)
+
+    if args.command == "audit":
+        return cmd_audit(args)
+
+    if args.command == "actions":
+        return cmd_actions(args)
 
     if args.command == "config":
         apps = discovery.all_apps()

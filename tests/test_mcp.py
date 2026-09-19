@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from qwen_omarchy_control import mcp
+from qwen_omarchy_control.desktop import DesktopController
 
 
 def call(handler, method, params=None, msg_id=1):
@@ -37,6 +38,20 @@ class McpHandshakeTest(unittest.TestCase):
         res = call(h, "tools/call", {"name": "run_shell", "arguments": {"command": "x"}})
         self.assertTrue(res["result"]["isError"])
         self.assertIn("not exposed", res["result"]["content"][0]["text"])
+
+    def test_describe_actions_is_read_only_and_dispatchable(self):
+        h = mcp.McpHandler()
+        names = {t["name"] for t in mcp.TOOLS}
+        self.assertIn("describe_actions", names)
+        self.assertIn("describe_actions", mcp.McpHandler.READ_ONLY)
+        # It is dispatched straight through (never gated behind a confirmation).
+        with mock.patch("qwen_omarchy_control.vision.describe_actions") as describe:
+            describe.return_value = {"window_title": "W", "actions": [], "top_action": None}
+            res = call(h, "tools/call",
+                       {"name": "describe_actions", "arguments": {"window": "123"}})
+        self.assertFalse(res["result"]["isError"])
+        describe.assert_called_once_with("123")
+        self.assertIsNone(h._pending)
 
     def test_notifications_ignored(self):
         h = mcp.McpHandler()
@@ -177,17 +192,15 @@ class MouseToolTest(unittest.TestCase):
 
     def test_mouse_click_requires_ydotool(self):
         h = mcp.McpHandler()
-        with mock.patch("qwen_omarchy_control.desktop.Path.exists") as exists:
-            exists.return_value = False
+        with mock.patch.object(DesktopController, "_ydotool_ready", return_value=False):
             res = call(h, "tools/call", {"name": "mouse_click", "arguments": {}})
         self.assertTrue(res["result"]["isError"])
         self.assertIn("ydotool", res["result"]["content"][0]["text"])
 
     def test_mouse_click_builds_argv(self):
         h = mcp.McpHandler()
-        with mock.patch("qwen_omarchy_control.desktop.Path.exists") as exists, \
+        with mock.patch.object(DesktopController, "_ydotool_ready", return_value=True), \
              mock.patch("qwen_omarchy_control.desktop.run") as run:
-            exists.return_value = True
             run.return_value = (0, "")
             res = call(h, "tools/call",
                        {"name": "mouse_click", "arguments": {"button": "right", "double": True}})
@@ -197,11 +210,10 @@ class MouseToolTest(unittest.TestCase):
 
     def test_mouse_scroll_builds_wheel(self):
         h = mcp.McpHandler()
-        with mock.patch("qwen_omarchy_control.desktop.Path.exists") as exists, \
+        with mock.patch.object(DesktopController, "_ydotool_ready", return_value=True), \
              mock.patch("qwen_omarchy_control.desktop.hyprctl_json") as hypr, \
              mock.patch("qwen_omarchy_control.desktop._dispatch") as dispatch, \
              mock.patch("qwen_omarchy_control.desktop.run") as run:
-            exists.return_value = True
             hypr.return_value = {"address": "0x1", "class": "google-chrome",
                                  "title": "x", "initialClass": "google-chrome",
                                  "at": [0, 0], "size": [1000, 800]}

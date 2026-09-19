@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import discovery
+from .panic import guard
 from .policy import classify, reject_sensitive_text
 
 # ---------------------------------------------------------------------------
@@ -300,6 +301,7 @@ class DesktopController:
 
     def pointer_move(self, x: int, y: int, relative: bool = False) -> str:
         """Move the pointer (absolute screen coords, or a delta when relative)."""
+        guard("a pointer move")
         try:
             nx, ny = int(x), int(y)
         except (TypeError, ValueError):
@@ -319,6 +321,7 @@ class DesktopController:
         return f"pointer moved to {nx},{ny}"
 
     def mouse_click(self, button: str = "left", double: bool = False) -> str:
+        guard("a click")
         button = (button or "left").strip().lower()
         code = YDOTOOL_BUTTONS.get(button)
         if code is None:
@@ -342,6 +345,7 @@ class DesktopController:
         whatever is under the cursor, so without the move the scroll would land
         on whichever pane the mouse happens to be resting over.
         """
+        guard("a scroll")
         direction = (direction or "").strip().lower()
         if direction not in SCROLL_SIGN:
             raise _fail(f"direction must be one of {', '.join(SCROLL_SIGN)}")
@@ -692,6 +696,7 @@ class DesktopController:
         target app (e.g. to hand a request to the user's coding agent).
         Level 2: ordinary, non-sensitive windows only.
         """
+        guard("typed text")
         text = (text or "").strip()
         if not text:
             raise _fail("nothing to type")

@@ -15,7 +15,7 @@ import sys
 import traceback
 import uuid
 
-from . import triage, vision
+from . import panic, triage, vision
 from .desktop import DesktopController, DesktopError
 from .policy import PolicyError
 
@@ -317,6 +317,25 @@ TOOLS = [
         },
     },
     {
+        "name": "describe_actions",
+        "description": "Answer \"what can I do here?\" for a window: read its "
+                       "accessibility tree and name the 3-5 meaningful actions "
+                       "(open, save, send, delete, navigate), best first. "
+                       "Read-only: no click, no mouse movement, and allowed even "
+                       "while the freeze is set. Use it when the user asks what "
+                       "is available in the current window, or to orient before "
+                       "clicking. Level 1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window": {"type": "string",
+                           "description": "Target window: a pid, or a title/app-name "
+                                          "substring. Omit for the focused window."},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "confirm_pending",
         "description": "Run the action that is waiting for confirmation (returned by a "
                        "gated tool as {\"pending\": ...}). Call this after the user "
@@ -337,7 +356,7 @@ class McpHandler:
     READ_ONLY = frozenset({
         "get_active_window", "list_windows", "list_workspaces", "get_monitors",
         "get_audio_status", "get_system_status", "read_window", "read_screen",
-        "find_element",
+        "find_element", "describe_actions",
     })
 
     def __init__(self) -> None:
@@ -394,7 +413,8 @@ class McpHandler:
                 "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                 "isError": False,
             })
-        except (DesktopError, PolicyError, ValueError, vision.VisionError) as exc:
+        except (DesktopError, PolicyError, panic.PanicError,
+                ValueError, vision.VisionError) as exc:
             return self._result(msg_id, {
                 "content": [{"type": "text", "text": f"ERROR: {exc}"}],
                 "isError": True,
@@ -484,6 +504,10 @@ class McpHandler:
         if name == "find_element":
             return vision.find_element(
                 str(args["goal"]),
+                str(args["window"]) if args.get("window") else None,
+            )
+        if name == "describe_actions":
+            return vision.describe_actions(
                 str(args["window"]) if args.get("window") else None,
             )
         if name == "click_element":
