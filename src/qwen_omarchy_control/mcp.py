@@ -15,6 +15,7 @@ import sys
 import traceback
 import uuid
 
+from . import triage, vision
 from .desktop import DesktopController, DesktopError
 from .policy import PolicyError
 
@@ -264,6 +265,55 @@ TOOLS = [
         },
     },
     {
+        "name": "find_element",
+        "description": "Locate a UI element in a window by what it IS rather than where "
+                       "it is, using the window's accessibility tree. Returns the "
+                       "element's role, label and a stable token. Read-only (no "
+                       "click). Use this whenever a control has a clear name ('the "
+                       "Save button', 'the Documents folder') and prefer it to "
+                       "read_screen guessing. If it reports the window has no "
+                       "accessibility tree, use the OCR tools instead. Level 1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string",
+                         "description": "What you are looking for, e.g. 'the Save "
+                                        "button' or 'the Documents folder'."},
+                "window": {"type": "string",
+                           "description": "Target window: a pid, or a title/app-name "
+                                          "substring. Omit to search all windows."},
+            },
+            "required": ["goal"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "click_element",
+        "description": "Find a UI element by name (like find_element) and click it via "
+                       "the accessibility tree instead of OCR-and-coordinates. This "
+                       "MOVES THE REAL MOUSE AND TAKES FOCUS for a moment: a desktop "
+                       "notification announces it, so tell the user you are taking "
+                       "control and to leave the mouse and keyboard alone until you "
+                       "say it is done. Use for a control with a clear label; for a "
+                       "canvas/custom-drawn surface use read_screen + mouse_click. "
+                       "Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string",
+                         "description": "What to click, e.g. 'the OK button'."},
+                "window": {"type": "string",
+                           "description": "Target window: a pid, or a title/app-name "
+                                          "substring. Omit for the focused window."},
+                "double": {"type": "boolean", "default": False,
+                           "description": "Double-click to open an item (folders, "
+                                          "list rows). Default single click."},
+            },
+            "required": ["goal"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "confirm_pending",
         "description": "Run the action that is waiting for confirmation (returned by a "
                        "gated tool as {\"pending\": ...}). Call this after the user "
@@ -284,6 +334,7 @@ class McpHandler:
     READ_ONLY = frozenset({
         "get_active_window", "list_windows", "list_workspaces", "get_monitors",
         "get_audio_status", "get_system_status", "read_window", "read_screen",
+        "find_element",
     })
 
     def __init__(self) -> None:
@@ -340,7 +391,7 @@ class McpHandler:
                 "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                 "isError": False,
             })
-        except (DesktopError, PolicyError, ValueError) as exc:
+        except (DesktopError, PolicyError, ValueError, vision.VisionError) as exc:
             return self._result(msg_id, {
                 "content": [{"type": "text", "text": f"ERROR: {exc}"}],
                 "isError": True,
@@ -372,6 +423,48 @@ class McpHandler:
                                 "ahead\"). If they confirm, call confirm_pending. "
                                 "If they decline, call cancel_pending.",
             }
+        if name == "launch_agent":
+            return self._triage_launch_agent(name, args)
+        return self._execute(name, args)
+
+    def _triage_launch_agent(self, name: str, args: dict):
+        """Pre-dispatch triage for the agent-delegation seam.
+
+        Only a launch that CARRIES A PROMPT submits work to an agent; opening a
+        fresh agent window sends nothing and needs no gate. Triage is disabled
+        by default and returns `allow` in `off`/`log` modes, so this is a no-op
+        until it is deliberately enforced.
+        """
+        prompt = str(args.get("prompt") or "").strip()
+        agent = str(args.get("agent") or "hermes")
+        if not prompt:
+            return self._execute(name, args)
+
+        verdict = triage.evaluate(prompt, context=f"target agent: {agent}")
+        if verdict.verdict == "refuse":
+            # Nothing is queued: a mis-heard fragment must not become a task.
+            raise PolicyError(
+                f"request withheld before reaching {agent}: {verdict.reason}. "
+                "Ask the user to repeat or clarify what they want done."
+            )
+        if verdict.verdict == "confirm":
+            desc = f"send {agent} the task: {prompt[:60]}"
+            self._pending = (name, args, desc)
+            return {
+                "pending": desc,
+                "triage": {
+                    "verdict": verdict.verdict,
+                    "route": verdict.route,
+                    "confidence": round(verdict.confidence, 3),
+                    "destructive": round(verdict.destructive, 3),
+                    "reason": verdict.reason,
+                },
+                "instructions": "This request needs explicit approval before it "
+                                "reaches the agent. Ask the user to confirm (e.g. "
+                                "\"yes\", \"go ahead\"). If they confirm, call "
+                                "confirm_pending. If they decline, call "
+                                "cancel_pending.",
+            }
         return self._execute(name, args)
 
     def _resolve_pending(self, confirm: bool) -> dict:
@@ -385,6 +478,17 @@ class McpHandler:
 
     def _execute(self, name: str, args: dict):
         ctrl = self.controller
+        if name == "find_element":
+            return vision.find_element(
+                str(args["goal"]),
+                str(args["window"]) if args.get("window") else None,
+            )
+        if name == "click_element":
+            return vision.click_element(
+                str(args["goal"]),
+                str(args["window"]) if args.get("window") else None,
+                double=bool(args.get("double", False)),
+            )
         if name == "get_active_window":
             return ctrl.get_active_window()
         if name == "list_windows":

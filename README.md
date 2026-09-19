@@ -213,6 +213,83 @@ want the visible agent every time, say "use hermes to ..." explicitly. Avoid
 literal `/paths` in spoken requests (the Qwen TUI treats absolute paths as file
 attachments).
 
+## Precise element targeting (dormant, off by default)
+
+The OCR tools guess at pixels: tesseract reads a screenshot and a click lands on
+a coordinate. The desktop already exposes a structured accessibility (AT-SPI)
+tree, so there is no need to guess. Two extra tools use it:
+
+- **`find_element`** — read-only. Given a goal ("the Documents folder", "the
+  Save button") it returns the element's role, label and screen position.
+- **`click_element`** — finds that element and clicks it. Add `double: true` to
+  open an item.
+
+```
+cua-driver get_window_state   ->  candidates (role, label, index, frame)
+Jev (System One)              ->  pick exactly one supplied candidate, +confidence
+code                          ->  focus window, move pointer to frame, ydotool click
+```
+
+The model chooses among supplied candidates only — it never invents an element
+or a coordinate — and code decides whether the confidence is high enough.
+
+**Why the click is delivered by ydotool, not cua-driver.** Measured on this
+Hyprland session: cua-driver's accessibility click fails on native Wayland
+windows (`X11 error TranslateCoordinates`), and its background/foreground routes
+report `background_unavailable` / `foreground_unavailable` ("production
+Hyprland input plugin is unavailable"). Its AT-SPI *reads* are perfect and its
+element frames are screen-absolute, so targeting comes from Cua and delivery
+uses the project's existing input path. Verified end-to-end: a Jev-selected
+"Documents" cell changed the Nautilus window title from `Home` to `Documents`.
+
+Disabled by default (`~/.config/qwen-omarchy-control/vision.json`, see
+`share/vision.example.json`). When disabled — or when cua-driver, the key or the
+accessibility tree is unavailable — the tools return a clear error and the
+existing OCR tools remain the path. Nothing here sits in the realtime voice
+loop; it is a tool the frontend may choose to call.
+
+## Pre-dispatch agent triage (dormant, off by default)
+
+The desktop controller is safe by construction (allowlisted argv, no shell,
+unknown tools fail closed). The **agent handoff is not**: `launch_agent` submits
+a spoken prompt to a coding agent whose approval policy may be `off`, so a
+misheard or hostile sentence becomes a real coding task with no gate. Triage
+guards that one seam.
+
+It is **off by default** and never sits inside the realtime voice loop, so it
+cannot add latency to speech or drop a reply. When enabled, one TypeSafe/System
+One (**Jev**) call asks three atomic questions over the request text — what the
+request really is (agent task / desktop command / question / garbage), whether
+it is clear, and whether it could be destructive — and **code** decides:
+
+| Mode | Behaviour |
+| --- | --- |
+| `off` (default) | No network call. `launch_agent` behaves exactly as before. |
+| `log` | Evaluates and records what it *would* do, but always allows. |
+| `enforce` | Refuses mis-heard fragments; holds destructive or unclear agent requests for spoken confirmation. |
+
+Opening an agent **without** a prompt ("open hermes") sends nothing and is never
+triaged — only a prompt that submits work is.
+
+```bash
+desktop-control triage status          # current mode + policy
+desktop-control triage set log         # measure first, change nothing
+desktop-control triage review -v       # recent decisions with prompts
+desktop-control triage stats           # verdict counts + fallback rate
+desktop-control triage set enforce     # only once the numbers look right
+desktop-control triage set off
+```
+
+`enforce` fails closed: no key, network error, timeout or malformed answer holds
+the request for confirmation rather than allowing it. Every decision is appended
+to `~/.local/state/qwen-omarchy-control/triage.jsonl` (0600, secrets masked) so
+the false-block rate can be measured before enforcement is trusted.
+
+Config: `~/.config/qwen-omarchy-control/triage.json` (0600); see
+`share/triage.example.json`. Policy thresholds live in the config, not in the
+prompts. The API key is read from `OPENROUTER_API_KEY` or, read-only, from
+`~/.hermes/.env`; it is never written to the audit log.
+
 ## Safety policy
 
 - No generic `shell(...)` tool exists for the voice frontend.

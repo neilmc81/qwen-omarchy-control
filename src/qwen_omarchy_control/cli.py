@@ -13,9 +13,60 @@ import argparse
 import json
 import sys
 
-from . import discovery, policy
+from . import discovery, policy, triage
 from .desktop import DesktopController, DesktopError
 from .mcp import serve
+
+
+def cmd_triage(args) -> int:
+    if args.action == "status":
+        cfg = triage.load_config()
+        print(json.dumps({
+            "mode": cfg.get("mode"),
+            "model": cfg.get("model"),
+            "minConfidence": cfg.get("minConfidence"),
+            "destructiveConfirm": cfg.get("destructiveConfirm"),
+            "clearFloor": cfg.get("clearFloor"),
+            "config": str(triage.CONFIG_FILE),
+            "log": str(triage.LOG_FILE),
+        }, indent=2))
+        if cfg.get("mode") == "off":
+            print("\nTriage is OFF: launch_agent behaves exactly as before.",
+                  file=sys.stderr)
+        return 0
+    if args.action == "set":
+        if args.mode not in triage.MODES:
+            print(f"mode must be one of {', '.join(triage.MODES)}", file=sys.stderr)
+            return 2
+        cfg = triage.load_config()
+        cfg["mode"] = args.mode
+        triage.save_config(cfg)
+        print(f"triage mode = {args.mode}")
+        if args.mode != "off":
+            try:
+                triage._read_key(cfg)
+            except triage.TriageError as exc:
+                print(f"warning: {exc}", file=sys.stderr)
+        return 0
+    if args.action in ("review", "stats"):
+        rows = triage.read_log(limit=args.limit)
+        if args.action == "stats":
+            print(json.dumps(triage.summarize(rows), indent=2))
+            return 0
+        for row in rows:
+            print(f"{row.get('ts','')}  {str(row.get('verdict')):<8} "
+                  f"route={str(row.get('route')):<16} "
+                  f"conf={float(row.get('confidence') or 0):.2f} "
+                  f"destr={float(row.get('destructive') or 0):.2f} "
+                  f"clear={float(row.get('clear') or 0):.2f}  "
+                  f"{row.get('reason','')}")
+            if args.verbose and row.get("prompt"):
+                print(f"    prompt: {row['prompt'][:160]}")
+        if not rows:
+            print(f"no triage entries yet ({triage.LOG_FILE})")
+        return 0
+    print("unknown triage action", file=sys.stderr)
+    return 2
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +82,17 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("mcp", help="serve MCP over stdio")
     sub.add_parser("config", help="print config summary")
+
+    triage_p = sub.add_parser("triage", help="pre-dispatch agent-triage control")
+    triage_sub = triage_p.add_subparsers(dest="action", required=True)
+    triage_sub.add_parser("status", help="show mode and policy")
+    set_p = triage_sub.add_parser("set", help="set mode (off|log|enforce)")
+    set_p.add_argument("mode")
+    review_p = triage_sub.add_parser("review", help="show recent decisions")
+    review_p.add_argument("--limit", type=int, default=30)
+    review_p.add_argument("-v", "--verbose", action="store_true")
+    stats_p = triage_sub.add_parser("stats", help="verdict counts")
+    stats_p.add_argument("--limit", type=int, default=1000)
 
     args = parser.parse_args(argv)
     if args.command is None:
@@ -53,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "mcp":
         return serve()
+
+    if args.command == "triage":
+        return cmd_triage(args)
 
     if args.command == "config":
         apps = discovery.all_apps()
