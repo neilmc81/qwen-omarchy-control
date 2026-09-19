@@ -1,0 +1,13 @@
+{
+  "_comment": "Copy to ~/.config/qwen-omarchy-control/vision.json (0600). Controls precise element targeting for find_element/click_element. Default is disabled: the tools report that they are unavailable and the OCR tools remain the path.",
+  "enabled": false,
+  "minConfidence": 0.6,
+  "maxCandidates": 40,
+  "timeoutMs": 12000,
+  "driverTimeoutMs": 20000,
+  "model": "typesafe/jev-1.13",
+  "endpoint": "https://openrouter.ai/api/alpha/decisions",
+  "apiKeyEnv": "OPENROUTER_API_KEY",
+  "driver": "cua-driver",
+  "enableWayland": true
+}
