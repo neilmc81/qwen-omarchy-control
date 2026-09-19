@@ -223,3 +223,20 @@ No OpenAI realtime/STT/TTS is used anywhere in the voice path.
 - [x] 15-18. Coding-agent task (git status of ~/Work) reached Hermes; result returned to voice
 - [ ] 19-21. Destructive-command gating: Hermes `approvals.mode: off` in ~/.hermes config — a spoken delete executed without a prompt. **RESOLVED BY USER: leave approvals off (intentional). The voice assistant inherits your coder's no-prompt destructive policy; only voice-safe desktop operations are hard-gated by the controller.**
 - [x] 22-25. Restart: config survived, frontend MCP (17 tools) + backend READY, single gateway process, no orphaned MCP processes
+---
+
+## Later additions (see README and ROADMAP for detail)
+
+The acceptance checklist above is the record of the original install; the tool
+counts in it (17) refer to that day. Since then:
+
+- Precise element targeting: `find_element`, `click_element` (accessibility tree
+  + Jev selection, delivered by ydotool, verify-then-report).
+- `describe_actions` ("what can I do here?", read-only), trajectory audit
+  (`desktop-control audit stats|review`), opt-in Jev outcome verification, and a
+  panic freeze honoured by every input path.
+- **Live count: 29 frontend MCP tools** (`curl -s localhost:3101/api/health |
+  jq .frontendMcp.tools`). Three surfaces must agree for a tool to reach the
+  model - the MCP server, `frontend-mcp.json`, and `~/.config/qwaudio/ASSISTANT.md`;
+  `tests/test_mcp.py::FrontendAllowlistTest` pins the first two, and
+  `share/assistant.example.md` tracks the third.
