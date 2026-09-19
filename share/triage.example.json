@@ -1,0 +1,13 @@
+{
+  "_comment": "Copy to ~/.config/qwen-omarchy-control/triage.json (0600). Controls the dormant pre-dispatch triage for launch_agent. Default is off: no network call, no behaviour change.",
+  "mode": "off",
+  "model": "typesafe/jev-1.13",
+  "endpoint": "https://openrouter.ai/api/alpha/decisions",
+  "minConfidence": 0.85,
+  "destructiveConfirm": 0.5,
+  "clearFloor": 0.5,
+  "timeoutMs": 8000,
+  "apiKeyEnv": "OPENROUTER_API_KEY",
+  "keyFile": "",
+  "logPrompt": true
+}
