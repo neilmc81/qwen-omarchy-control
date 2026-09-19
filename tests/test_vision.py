@@ -285,6 +285,40 @@ class VerifyOutcomeTest(unittest.TestCase):
         self.assertEqual(outcome, "unknown")
 
 
+class ThrottleTest(unittest.TestCase):
+    def setUp(self):
+        self._old = vision._last_click_at
+        vision._last_click_at = 0.0
+
+    def tearDown(self):
+        vision._last_click_at = self._old
+
+    def test_first_click_does_not_wait(self):
+        with mock.patch("time.sleep") as sleep, \
+                mock.patch("time.monotonic", return_value=100.0):
+            waited = vision._throttle(1200)
+        self.assertEqual(waited, 0.0)
+        sleep.assert_not_called()
+
+    def test_second_click_waits_the_interval(self):
+        with mock.patch("time.sleep") as sleep:
+            with mock.patch("time.monotonic", return_value=100.0):
+                vision._throttle(1200)
+            with mock.patch("time.monotonic", return_value=100.2):
+                waited = vision._throttle(1200)
+        self.assertAlmostEqual(waited, 1.0, places=1)
+        sleep.assert_called()
+
+    def test_no_wait_when_interval_elapsed(self):
+        with mock.patch("time.sleep") as sleep:
+            with mock.patch("time.monotonic", return_value=100.0):
+                vision._throttle(1200)
+            with mock.patch("time.monotonic", return_value=105.0):
+                waited = vision._throttle(1200)
+        self.assertEqual(waited, 0.0)
+        sleep.assert_not_called()
+
+
 class PanicTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

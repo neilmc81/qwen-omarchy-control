@@ -73,6 +73,12 @@ DEFAULT_CONFIG = {
     # Verify the outcome of a click so the result is reported honestly.
     "verify": True,
     "verifyDelayMs": 600,
+    # Minimum spacing between delivered clicks, in ms. This is a stability
+    # guard, not politeness: measured on this machine, GTK4/Nautilus segfaults
+    # in its GSK renderer (gsk_renderer_render) when folders are opened in rapid
+    # programmatic succession. An agent should not machine-gun the UI anyway, so
+    # input is throttled to a human-ish pace.
+    "minIntervalMs": 1200,
     # Automatic retries default to 0, and that is a safety decision, not a
     # placeholder. A retry is a SECOND click: on a single click that becomes a
     # double-click (which navigates or opens), and on a button it can submit
@@ -95,6 +101,29 @@ PANIC_FILE = Path(os.environ.get(
 CONFIG_FILE = Path(os.environ.get(
     "QWEN_VISION_CONFIG", CONFIG_HOME / "qwen-omarchy-control" / "vision.json"
 ))
+
+# Time of the last delivered click, for the minimum-interval throttle. Module
+# state is fine here: the MCP server is one long-lived process per voice session.
+_last_click_at = 0.0
+
+
+def _throttle(min_interval_ms: int) -> float:
+    """Sleep so clicks are spaced at least `min_interval_ms` apart.
+
+    Returns the seconds waited. Guards against machine-gunning a GUI, which is
+    both bad manners and, measured here, able to crash GTK4's renderer.
+    """
+    global _last_click_at
+    interval = max(0.0, min_interval_ms / 1000.0)
+    now = time.monotonic()
+    waited = 0.0
+    if _last_click_at and interval:
+        remaining = interval - (now - _last_click_at)
+        if remaining > 0:
+            time.sleep(remaining)
+            waited = remaining
+    _last_click_at = time.monotonic()
+    return waited
 
 
 def load_config() -> dict:
@@ -597,6 +626,7 @@ def click_element(goal: str, window_hint: str | None = None,
     for attempt in range(1, attempts + 1):
         if panicked():
             raise _panic_error()
+        _throttle(int(cfg.get("minIntervalMs", 1200)))
         # Focus the target first: ydotool delivers to the focused surface.
         try:
             class_hint = found.get("window_class") or found.get("window_title") or ""

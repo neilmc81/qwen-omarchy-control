@@ -139,15 +139,40 @@ Feed successes and failures back into better element descriptions for Jev
 
 Skip #6/#7/#13 until #1b is solid.
 
-## Observations from building #1
+## Nautilus crashes during testing — investigated 2026-09-19
 
-- **Nautilus segfaulted three times** during interactive testing (SIGSEGV in
-  the GTK4 **Vulkan** renderer, `libvulkan_intel_hasvk.so` on this Broadwell
-  GPU, via `gsk_renderer_render`). Idle windows and repeated accessibility
-  reads/screenshots did NOT reproduce it, so the trigger looks like
-  GTK4+Vulkan rendering on this hardware rather than the Cua/Jev path — but it
-  was not fully isolated. If it recurs, try `GSK_RENDERER=ngl` (or `gl`) for the
-  affected app, which is a GTK-side workaround, not something this repo owns.
+Five SIGSEGV coredumps of `nautilus`, all during automated testing. Omarchy
+raised a "Process crashed" notification each time.
+
+**Established by controlled experiments:**
+
+- Nautilus does **not** crash when left alone, when resized in a loop, or when
+  screenshotted repeatedly (window and desktop capture, 10+ times each).
+- It does **not** crash from *pure* GUI interaction: raw `ydotool` double-clicks
+  with no accessibility involvement survived repeated runs.
+- It **does** crash when folders are opened in **rapid programmatic
+  succession**, which is what the test loop did (open, re-read, open again
+  within ~2s, several times).
+- The crash is always in GTK4's **GSK renderer** (`gsk_renderer_render`), on the
+  main loop's redraw. Switching renderer does not help: it reproduced under the
+  default (Vulkan, `libvulkan_intel_hasvk.so`) *and* under `GSK_RENDERER=ngl`
+  (`libEGL_mesa.so.0`), so it is the GSK/render path in general, not one GPU
+  backend.
+
+**Mitigation shipped:** `click_element` now throttles delivered input to at most
+one click per `minIntervalMs` (default 1200 ms). An agent should not machine-gun
+a GUI regardless, so this is a sane default even if the crash is never fully
+explained. The exact sequence above survived with the throttle in place.
+
+**Not fully isolated / for upstream:** whether the root cause is Nautilus, GTK4,
+or the AT-SPI bridge being exercised concurrently with a redraw. A stock GTK4
+app under rapid programmatic folder navigation is the smallest reproducer to
+file upstream. `GDK_SCALE=2` is set by Omarchy's default `monitors.lua` while
+this panel reports scale 1 — a mismatch worth mentioning, but **not** shown to
+cause the crash (it reproduced with `GDK_SCALE=1` too).
+
+## Other observations from building #1
+
 - Grid-cell `selected` state is not exposed by Nautilus's AT-SPI tree, which is
   why a single click on a folder cannot be verified. This is a real ceiling:
   verify only what the tree actually publishes.
