@@ -5,6 +5,9 @@ Built around **Qwen Audio Agent** (Alibaba/DashScope realtime voice) with **Herm
 as the delegated coding backend, and a small local **desktop controller** for instant,
 safe desktop commands.
 
+Planned work and ideas for the voice + computer-use surface live in
+[ROADMAP.md](ROADMAP.md).
+
 ```
 Microphone
    │
