@@ -91,6 +91,27 @@ changed inside a field with no label change), ask Jev a Noul over the fresh tree
 
 **DONE (2026-09-19)** — see above.
 
+## Lesson: a tool is not "shipped" until three surfaces agree
+
+`describe_actions` worked from the CLI the day it was built, but asking the voice
+assistant "what can I do here?" got a generic answer. The tool was missing from
+two of the three places that make a tool reachable:
+
+1. **MCP server** (`mcp.py` TOOLS + `policy.py` level) — built.
+2. **Frontend allowlist** (`frontend-mcp.json`) — `frontend-mcp-client.mjs` only
+   forwards tools enabled here. Missing here = invisible to the model.
+3. **Persona** (`~/.config/qwaudio/ASSISTANT.md`) — the model must be told *when*
+   to call it. A description is not enough for a conversational trigger; without
+   the persona line the model answered from general knowledge.
+
+Failure modes differ by direction and neither is obvious:
+- server-only (the bug): silent — the model simply never sees the tool.
+- allowlist-only: **loud and fatal** — the client throws
+  `Enabled Frontend MCP tool is missing` and drops the whole MCP connection.
+
+`tests/test_mcp.py::FrontendAllowlistTest` now pins both directions. Restart the
+gateway after editing the allowlist or persona.
+
 ### 2. Goal-level actions
 `do_gui_task("save this file")` that internally snapshots, selects, clicks,
 verifies and retries. One tool, reliable outcome, instead of exposing raw
