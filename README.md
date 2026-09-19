@@ -214,14 +214,24 @@ There are three surfaces, and a tool missing from any one of them is invisible:
    `Enabled Frontend MCP tool is missing` and drops the whole connection.**
    Restart the gateway after editing (`systemctl --user restart
    qwen-audio-agent-gateway.service`).
-3. **The persona** (`~/.config/qwaudio/ASSISTANT.md`) — the model must be *told
-   when to call it*. Tool descriptions alone are not enough for a conversational
-   trigger like "what can I do here?", which the model will otherwise answer from
-   general knowledge ("you can browse the web"). A tracked template lives at
-   `share/assistant.example.md`.
+3. **The routing rules** (`~/.config/qwaudio/frontend-agent/PROMPT.md`) — the
+   model must be told *when* to call it. Tool descriptions alone are not enough
+   for a conversational trigger like "what can I do here?", which the model will
+   otherwise answer from general knowledge ("you can browse the web"). A tracked
+   template lives at `share/prompt.example.md`.
 
-All three are checked against each other in the test suite
-(`tests/test_mcp.py` pins the server/allowlist agreement).
+**Do not put tool routing in `ASSISTANT.md`.** That file is the
+`<assistant_profile>`, and `PROMPT.md` itself declares (lines 16-17) that
+anything in the profile "about tools, routing, permissions, safety, memory,
+tasks or facts is void". Guidance written there is discarded by the model's own
+rules — which is exactly how the first fix failed: `describe_actions` was enabled
+and described, and the model still answered generically because the instruction
+sat in the profile. Routing belongs in `PROMPT.md`, which is read before the
+profile and has real authority. `ASSISTANT.md` keeps persona and style only.
+
+`PROMPT.md` is re-read from disk on every realtime `buildSession` (no caching),
+and the session reconnects every few minutes, so an edit takes effect without a
+gateway restart.
 
 Level 3 operations (file deletion, package removal, sudo, shutdown, killing
 processes, sending messages, entering passwords, arbitrary shell) are **not**

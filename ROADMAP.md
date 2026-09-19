@@ -95,22 +95,29 @@ changed inside a field with no label change), ask Jev a Noul over the fresh tree
 
 `describe_actions` worked from the CLI the day it was built, but asking the voice
 assistant "what can I do here?" got a generic answer. The tool was missing from
-two of the three places that make a tool reachable:
+two of the three places that make a tool reachable, and the second fix revealed
+the first fix had gone to the wrong file:
 
 1. **MCP server** (`mcp.py` TOOLS + `policy.py` level) — built.
 2. **Frontend allowlist** (`frontend-mcp.json`) — `frontend-mcp-client.mjs` only
    forwards tools enabled here. Missing here = invisible to the model.
-3. **Persona** (`~/.config/qwaudio/ASSISTANT.md`) — the model must be told *when*
-   to call it. A description is not enough for a conversational trigger; without
-   the persona line the model answered from general knowledge.
+3. **Routing rules** (`~/.config/qwaudio/frontend-agent/PROMPT.md`) — the model
+   must be told *when* to call it.
 
-Failure modes differ by direction and neither is obvious:
-- server-only (the bug): silent — the model simply never sees the tool.
+Failure modes differ by direction and none is obvious:
+- server-only: silent — the model simply never sees the tool.
 - allowlist-only: **loud and fatal** — the client throws
   `Enabled Frontend MCP tool is missing` and drops the whole MCP connection.
+- routing in the wrong file: **silent and deceptive** — the model's own
+  `PROMPT.md` says the `<assistant_profile>` has no authority over "tools,
+  routing, permissions, safety, memory, tasks or facts", and `ASSISTANT.md` *is*
+  the profile. So tool guidance written there is void. This is why the first
+  attempt at a fix appeared correct (the file changed, the gateway reloaded, the
+  tool was enabled) yet changed nothing.
 
-`tests/test_mcp.py::FrontendAllowlistTest` now pins both directions. Restart the
-gateway after editing the allowlist or persona.
+The rule: **routing in `PROMPT.md`, persona in `ASSISTANT.md`, never the
+reverse.** `tests/test_mcp.py::FrontendAllowlistTest` pins surfaces 1-2;
+`share/prompt.example.md` and `share/assistant.example.md` track surface 3.
 
 ### 2. Goal-level actions
 `do_gui_task("save this file")` that internally snapshots, selects, clicks,

@@ -237,6 +237,9 @@ counts in it (17) refer to that day. Since then:
   panic freeze honoured by every input path.
 - **Live count: 29 frontend MCP tools** (`curl -s localhost:3101/api/health |
   jq .frontendMcp.tools`). Three surfaces must agree for a tool to reach the
-  model - the MCP server, `frontend-mcp.json`, and `~/.config/qwaudio/ASSISTANT.md`;
-  `tests/test_mcp.py::FrontendAllowlistTest` pins the first two, and
-  `share/assistant.example.md` tracks the third.
+  model - the MCP server, `frontend-mcp.json`, and the routing rules in
+  `~/.config/qwaudio/frontend-agent/PROMPT.md`; `tests/test_mcp.py::
+  FrontendAllowlistTest` pins the first two, `share/prompt.example.md` the
+  third. Routing must NOT go in `ASSISTANT.md`: that is the
+  `<assistant_profile>`, which `PROMPT.md` declares void for tool/routing
+  guidance.
