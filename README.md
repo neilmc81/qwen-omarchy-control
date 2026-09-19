@@ -182,9 +182,11 @@ backend involved), matching the level policy:
   `list_workspaces`, `get_monitors`, `switch_workspace`, `focus_window`,
   `launch_app`, `set_volume`, `volume_up`, `volume_down`, `mute_audio`,
   `unmute_audio`, `get_audio_status`, `get_system_status`,
-  `read_window`, `read_screen`, `pointer_move`
+  `read_window`, `read_screen`, `pointer_move`, `find_element`,
+  `describe_actions`
 - **Level 2 (careful):** `move_active_window_to_workspace`,
-  `close_active_window`, `open_url`, `type_text`, `mouse_click`, `mouse_scroll`
+  `close_active_window`, `open_url`, `type_text`, `mouse_click`, `mouse_scroll`,
+  `click_element`
 - **Confirmation gating:** `close_active_window`, `move_active_window_to_workspace`
   and `set_volume` do NOT run immediately — they return a pending action and the
   assistant asks you to confirm out loud before calling `confirm_pending`
@@ -194,7 +196,32 @@ backend involved), matching the level policy:
   (left/right/middle, optional double) and `mouse_scroll` (by screenfuls,
   pointing at the target window first). Pointer movement uses Hyprland's
   `hl.dsp.cursor.move`; clicks and the wheel need the `ydotool` daemon
-  (`systemctl --user enable --now ydotool.service`).
+  (`systemctl --user enable --now ydotool.service`). Every one of these honours
+  the panic freeze (see below).
+
+### Three places a tool must be registered
+
+Adding a tool to the MCP server is not enough for the voice model to use it.
+There are three surfaces, and a tool missing from any one of them is invisible:
+
+1. **The MCP server** (`src/qwen_omarchy_control/mcp.py`, `TOOLS`) — what the
+   server can serve, and `policy.py` for its level.
+2. **The frontend allowlist** (`frontend-mcp.json`) — the Qwen frontend only
+   forwards tools listed here with `"enabled": true`
+   (`frontend-mcp-client.mjs` filters on it). A tool present on the server but
+   absent here never reaches the model. **Adding an enabled entry whose name the
+   server does not expose is worse: the client throws
+   `Enabled Frontend MCP tool is missing` and drops the whole connection.**
+   Restart the gateway after editing (`systemctl --user restart
+   qwen-audio-agent-gateway.service`).
+3. **The persona** (`~/.config/qwaudio/ASSISTANT.md`) — the model must be *told
+   when to call it*. Tool descriptions alone are not enough for a conversational
+   trigger like "what can I do here?", which the model will otherwise answer from
+   general knowledge ("you can browse the web"). A tracked template lives at
+   `share/assistant.example.md`.
+
+All three are checked against each other in the test suite
+(`tests/test_mcp.py` pins the server/allowlist agreement).
 
 Level 3 operations (file deletion, package removal, sudo, shutdown, killing
 processes, sending messages, entering passwords, arbitrary shell) are **not**

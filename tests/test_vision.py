@@ -322,6 +322,34 @@ class ThrottleTest(unittest.TestCase):
         sleep.assert_not_called()
 
 
+class FocusedWindowTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = dict(vision.DEFAULT_CONFIG)
+
+    def test_omitted_window_resolves_to_focused(self):
+        # The tool schema promises "omit for the focused window". cua's list has
+        # no focus flag, so Hyprland's active window is the source of truth.
+        windows = [{"pid": 7, "window_id": 42, "title": "Home",
+                    "app_name": "nautilus", "is_on_screen": True}]
+        with mock.patch.object(vision, "list_windows", return_value=windows), \
+                mock.patch.object(vision, "_focused_window",
+                                  return_value={"pid": 7, "title": "Home",
+                                                "class": "nautilus"}):
+            window = vision.resolve_window(self.cfg, None)
+        self.assertEqual(window["window_id"], 42)
+
+    def test_nothing_focused_is_a_clean_error(self):
+        with mock.patch.object(vision, "_focused_window", return_value=None):
+            with self.assertRaises(vision.VisionError) as ctx:
+                vision.resolve_window(self.cfg, None)
+        self.assertIn("focused", str(ctx.exception))
+
+    def test_focus_lookup_failure_does_not_raise(self):
+        with mock.patch("qwen_omarchy_control.desktop.DesktopController"
+                        ".get_active_window", side_effect=RuntimeError("boom")):
+            self.assertIsNone(vision._focused_window())
+
+
 class JevOutcomeTest(unittest.TestCase):
     def setUp(self):
         self.cfg = dict(vision.DEFAULT_CONFIG)

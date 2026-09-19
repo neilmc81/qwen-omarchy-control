@@ -264,8 +264,54 @@ def list_windows(cfg: dict, pid: int | None = None) -> list[dict]:
     return windows if isinstance(windows, list) else []
 
 
+def _focused_window() -> dict | None:
+    """The focused window per Hyprland, or None.
+
+    cua-driver's window list does not carry a focus flag (measured: both
+    `is_focused` and `focused` are absent), so "omit the window to use the
+    focused one" cannot be served from its list. Hyprland knows the active
+    window, and its pid/title match cua's entries, so it is used only to resolve
+    the target and then discarded.
+    """
+    from .desktop import DesktopController
+    try:
+        active = DesktopController().get_active_window()
+    except Exception:  # noqa: BLE001 - focus lookup must never break targeting
+        return None
+    return active if active.get("address") else None
+
+
 def resolve_window(cfg: dict, hint: str | None) -> dict:
-    """Pick a window by pid, or by matching a title/name substring."""
+    """Pick a window by pid, by matching a title/name substring, or the focused one."""
+    if not hint:
+        # The tools document "omit the window for the focused window". Honour it
+        # rather than raising, so "what can I do here?" works with no argument.
+        active = _focused_window()
+        if not active:
+            raise VisionError(
+                "no target window given and none is focused; pass pid or a "
+                "title/name"
+            )
+        pid = active.get("pid")
+        if pid:
+            try:
+                windows = list_windows(cfg, int(pid))
+                # Prefer the entry whose title matches the active one.
+                title = str(active.get("title") or "").lower()
+                for window in windows:
+                    if title and title[:20] in str(window.get("title") or "").lower():
+                        return window
+                for window in windows:
+                    if window.get("is_on_screen"):
+                        return window
+                if windows:
+                    return windows[0]
+            except VisionError:
+                pass
+        hint = str(active.get("class") or active.get("title") or "")
+        if not hint:
+            raise VisionError("the focused window could not be resolved")
+
     if hint and hint.isdigit():
         pid = int(hint)
         windows = list_windows(cfg, pid)

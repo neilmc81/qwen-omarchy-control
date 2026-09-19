@@ -2,10 +2,14 @@
 
 import json
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from qwen_omarchy_control import mcp
 from qwen_omarchy_control.desktop import DesktopController
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+FRONTEND_MCP_CONFIG = REPO_ROOT / "frontend-mcp.json"
 
 
 def call(handler, method, params=None, msg_id=1):
@@ -229,6 +233,47 @@ class MouseToolTest(unittest.TestCase):
         self.assertEqual(argv[2], "--wheel")
         self.assertEqual(argv[3], "-y")
         self.assertTrue(int(argv[4]) < 0)  # "down" is a negative wheel delta
+
+
+class FrontendAllowlistTest(unittest.TestCase):
+    """The frontend only forwards tools enabled in frontend-mcp.json.
+
+    Two failure modes this pins down, both silent to a casual reader:
+      * a tool enabled in the allowlist but missing from the server makes the
+        frontend client throw and drop the whole MCP connection;
+      * a tool on the server but absent from the allowlist is invisible to the
+        voice model - which is exactly how describe_actions was first shipped
+        and why asking "what can I do here?" got a generic answer.
+    """
+
+    def setUp(self):
+        self.config = json.loads(FRONTEND_MCP_CONFIG.read_text())
+        server = self.config["servers"]["qwen_omarchy_control"]
+        self.enabled = {name for name, policy in server["tools"].items()
+                        if policy.get("enabled")}
+        self.served = {tool["name"] for tool in mcp.TOOLS}
+
+    def test_every_enabled_tool_exists_on_the_server(self):
+        missing = self.enabled - self.served
+        self.assertEqual(
+            missing, set(),
+            f"frontend-mcp.json enables tools the MCP server does not expose; "
+            f"the frontend client would throw and drop the connection: "
+            f"{sorted(missing)}")
+
+    def test_every_conversational_tool_is_enabled(self):
+        # A tool the model is told to call must actually be reachable.
+        for name in ("find_element", "click_element", "describe_actions"):
+            self.assertIn(
+                name, self.enabled,
+                f"{name} is served but not enabled in frontend-mcp.json, so the "
+                "voice model never sees it")
+
+    def test_describe_actions_is_enabled_and_described(self):
+        server = self.config["servers"]["qwen_omarchy_control"]
+        policy = server["tools"]["describe_actions"]
+        self.assertTrue(policy["enabled"])
+        self.assertIn("what can i do here", policy["description"].lower())
 
 
 if __name__ == "__main__":
