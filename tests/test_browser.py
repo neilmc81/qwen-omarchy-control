@@ -401,6 +401,9 @@ class MultiWindowTest(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn("more than one window", message)
         self.assertIn("read_screen", message)
+        # The error is read by the voice model; it must not invite a
+        # destructive workaround (observed: it offered to close a window).
+        self.assertIn("Do NOT close", message)
 
     def test_single_window_is_not_flagged(self):
         windows = json.dumps({"windows": [

@@ -391,11 +391,16 @@ def _multi_window(cfg: dict) -> bool:
 
 
 def _single_window_error(cfg: dict) -> BrowserError:
+    # This text is read by the voice model, so it must NOT invite a destructive
+    # workaround. Observed live: a previous wording ("close the other browser
+    # windows") led the model to offer to close the user's MarketOS window. The
+    # fallback named here is read-only.
     return BrowserError(
         "the browser has more than one window open, and the precise (DOM) tools "
         "need exactly one to bind it exactly - with several, the driver falls "
-        "back to a title-only binding and refuses to read or act. Close the "
-        "other browser windows, or use read_screen for OCR instead."
+        "back to a title-only binding and refuses to read or act. Do NOT close "
+        "the user's windows. Report this in one sentence and use read_screen "
+        "(OCR) on the window the user means instead."
     )
 
 
