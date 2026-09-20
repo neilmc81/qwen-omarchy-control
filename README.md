@@ -451,6 +451,22 @@ want them.
 - Verified live: `browser_click "Learn more"` navigated example.com → iana.org;
   `browser_search "omarchy linux"` landed on real DuckDuckGo results with all
   three steps verified.
+- **Selection now uses Jev, not a string match.** The first version picked page
+  elements with a hand-written scorer, and it mis-chose the combobox "Search
+  with DuckDuckGo" over the "Search" button for the goal "Search". That is a
+  semantic judgement, so it now goes to Jev (the same `selection` primitive the
+  desktop path uses): candidates are pre-filtered to refs whose declared
+  `actions` include the interaction, Jev picks one id or "none", and code owns
+  the confidence floor. It degrades to the old scorer if the model is
+  unavailable, and records `selection` in the audit log so the two can be
+  compared. Verified live: "the Search button" -> the button, 0.99 confidence.
+- **`chrome://inspect` is not a substitute for the flags.** Measured: with
+  Chrome's newer remote-debugging toggle on and the flags absent, cua-driver
+  refuses (`browser_wrong_target_refused`, then `browser_reconnect_exhausted`)
+  because that bridge does not expose the classic `/json/version` endpoint Cua
+  uses to prove socket ownership - it returns 404, where the flag path returns
+  200. If prepare starts refusing after the browser or its endpoint changes,
+  `systemctl --user restart cua-driver.service` clears the stale state.
 - **A ref-validity trap, found and fixed:** page refs are invalidated by a newer
   snapshot of the same tab. Re-reading the page between choosing a ref and
   clicking it silently turned the click into a no-op (the driver still reported

@@ -33,6 +33,17 @@
 #
 # cua-driver must also be started with --grant existing-profile for it to attach
 # to a logged-in profile; see README: Typed browser control.
+#
+# OPERATIONAL NOTES (measured)
+#   * Chrome's newer `chrome://inspect` remote-debugging toggle is NOT a
+#     substitute. With it on and these flags absent, cua-driver refuses with
+#     `browser_wrong_target_refused` / `browser_reconnect_exhausted` because
+#     that bridge does not expose the classic /json/version endpoint cua uses
+#     to prove socket ownership (it returns 404). The flag path here does
+#     (200), which is why it is the supported route.
+#   * If a prepare call starts refusing after Chrome or its endpoint changed,
+#     restart the daemon to clear stale endpoint state:
+#       systemctl --user restart cua-driver.service
 set -u
 
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
