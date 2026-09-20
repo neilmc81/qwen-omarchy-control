@@ -54,6 +54,10 @@ LOG_FILE = Path(os.environ.get(
 _FIELDS = (
     "ts", "tool", "app", "window", "goal", "outcome", "verified", "reason",
     "attempts", "latency_ms", "cost_usd", "double", "takeover",
+    # How a target was chosen: "jev" (the System One model) or "fallback" (the
+    # deterministic scorer used when the model is unavailable), with the model's
+    # confidence. Lets the success rate be split by selection method.
+    "selection", "confidence",
 )
 
 

@@ -48,7 +48,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import panic, triage
+from . import panic, selection, triage
 
 # --- config ---------------------------------------------------------------
 
@@ -67,6 +67,11 @@ DEFAULT_CONFIG = {
     "clickRoute": "dom_event",
     # Keep the number of elements returned to the model bounded.
     "maxElements": 60,
+    # Pick page elements with Jev (System One) rather than a string match.
+    # Falls back to the deterministic scorer when the model is unavailable.
+    "selectWithJev": True,
+    # Confidence floor for a Jev selection to be acted on.
+    "minConfidence": 0.60,
     # Search engine used by the goal-level browser_search action.
     "searchEngine": "https://duckduckgo.com",
     "audit": True,
@@ -532,7 +537,7 @@ def browser_click(goal: str, cfg: dict | None = None,
     def run(window):
         target, tab, sem = _bind_and_read(cfg, window, query=goal)
         view = _compact(sem, cfg)
-        match = _best_match(view["elements"], goal)
+        match = select_element(view["elements"], goal, cfg, CLICK_ACTIONS)
         if match is None:
             raise BrowserError(
                 f"no page element matched {goal!r}; "
@@ -573,7 +578,10 @@ def browser_click(goal: str, cfg: dict | None = None,
                 "tool": "browser_click", "app": "browser", "window": title_before,
                 "goal": goal, "outcome": out["verification"],
                 "verified": changed, "reason": out["verification_reason"],
-                "cost_usd": 0.0, "takeover": "background",
+                "cost_usd": match.get("cost_usd") or 0.0,
+                "takeover": "background",
+                "selection": match.get("selection"),
+                "confidence": match.get("confidence"),
             })
         return out
 
@@ -595,7 +603,7 @@ def browser_type(text: str, goal: str | None = None, cfg: dict | None = None,
         target, tab, sem = _bind_and_read(cfg, window, query=goal)
         view = _compact(sem, cfg)
         if goal:
-            match = _best_match(view["elements"], goal)
+            match = select_element(view["elements"], goal, cfg, TYPE_ACTIONS)
             if match is None:
                 raise BrowserError(f"no page field matched {goal!r}")
         else:
@@ -771,19 +779,83 @@ def _first_input(elements: list[dict]) -> dict | None:
     return None
 
 
+# Actions that mean "this element can be clicked / typed into". A page element
+# is not actionable merely because it has a name (Cua publishes both `refs` and
+# non-actionable `content_refs`; the latter must never be treated as clickable).
+CLICK_ACTIONS = ("click", "pointer")
+TYPE_ACTIONS = ("type",)
+
+
+def _actionable(elements: list[dict], actions: tuple[str, ...]) -> list[dict]:
+    """Elements whose declared `actions` include one of `actions`.
+
+    When the snapshot carries no per-element action information, keep everything
+    rather than silently emptying the candidate list.
+    """
+    out = [e for e in elements
+           if any(a in (e.get("actions") or []) for a in actions)]
+    return out if out else [e for e in elements if e.get("actions") is not None] or elements
+
+
+def _jev_select(elements: list[dict], goal: str, cfg: dict,
+                actions: tuple[str, ...]) -> tuple[dict | None, str]:
+    """One Jev Choice over the supplied refs. Returns (element, why).
+
+    This is the same contract as the desktop path (`vision.select`): the model
+    picks exactly one supplied id or "none", and code owns the confidence floor
+    and the action. `actions` pre-filters to elements that actually declare the
+    kind of interaction being asked for.
+    """
+    candidates = _actionable(elements, actions)
+    criteria = {
+        str(e.get("ref")): f'{e.get("role") or "element"} "{e.get("name") or ""}"'
+        + (f' (actions: {", ".join(e.get("actions") or [])})' if e.get("actions") else "")
+        for e in candidates
+        if e.get("ref")
+    }
+    if not criteria:
+        return None, "the page exposed no actionable elements"
+    criteria["none"] = "No supplied element accomplishes the goal"
+    state = json.dumps({
+        "goal": goal,
+        "page": {"title": None, "url": None},
+        "elements": [
+            {"id": str(e.get("ref")), "role": e.get("role"), "name": e.get("name"),
+             "value": e.get("value"), "actions": e.get("actions")}
+            for e in candidates if e.get("ref")
+        ],
+    }, ensure_ascii=False)
+    instructions = (
+        f"Goal: {goal}. Select exactly one element id from the supplied list "
+        "that best accomplishes the goal, preferring an element whose actions "
+        "match the intended interaction (a button to activate, a text field to "
+        'type into). If none fits, choose "none".'
+    )
+    try:
+        payload = selection.ask(state, criteria, instructions,
+                                selection.jev_config(cfg))
+    except triage.TriageError as exc:
+        raise BrowserError(f"selection model unavailable: {exc}")
+    by_ref = {str(e.get("ref")): e for e in candidates if e.get("ref")}
+    try:
+        choice = selection.choose(payload, set(by_ref), cfg)
+    except selection.SelectionError as exc:
+        return None, str(exc)
+    element = dict(by_ref[choice.id])
+    element["confidence"] = choice.confidence
+    element["cost_usd"] = choice.cost_usd
+    return element, f"selected {choice.id} (confidence {choice.confidence:.2f})"
+
+
 def _best_match(elements: list[dict], goal: str) -> dict | None:
-    """Pick the element whose name/role best fits `goal`.
+    """Deterministic fallback used only when Jev is unavailable.
 
-    cua-driver already applies a semantic query, so its ordering is the primary
-    signal; this is a light re-rank so an exact name wins over a loose one, and
-    a role word in the goal is honoured.
-
-    The role weighting is not cosmetic. Measured: after typing into DuckDuckGo,
-    the goal "Search" matched the *combobox* named "Search with DuckDuckGo"
-    (a longer name scores higher on raw substring overlap) instead of the
-    "Search" button, so "click Search" would fill the field instead of
-    submitting. Role words in the goal ("button", "link", "field") therefore
-    weight the matching role, and an exact name match is decisive.
+    Kept deliberately: selection must degrade rather than break, so a missing
+    key or an outage falls back to this instead of failing the action. It is a
+    hand-written re-rank, not a judgement - see `_jev_select` for the primary
+    path. Measured: with the goal "Search", plain name overlap chose the
+    combobox "Search with DuckDuckGo" over the "Search" button, which is exactly
+    the kind of mistake the model is there to avoid.
     """
     raw = (goal or "").strip().lower()
     if not raw:
@@ -832,6 +904,55 @@ def _best_match(elements: list[dict], goal: str) -> dict | None:
     return scored[0][1]
 
 
+def select_element(elements: list[dict], goal: str, cfg: dict,
+                   actions: tuple[str, ...] = CLICK_ACTIONS) -> dict | None:
+    """Pick the element that fulfils `goal`, or None. Jev first, fallback second.
+
+    Returns a copy of the chosen element with `confidence`, `cost_usd` and
+    `selection` (how it was chosen) attached, so the caller can report honestly
+    and the audit log can record whether a model or the fallback chose it.
+
+    Selection must *degrade*, not break: a missing key or a Jev outage falls back
+    to the deterministic scorer rather than failing the action. The fallback is
+    labelled so the difference is never hidden.
+    """
+    if not elements:
+        return None
+
+    pool = _actionable(elements, actions)
+    used_fallback = False
+    why = ""
+    chosen = None
+
+    if cfg.get("selectWithJev", True):
+        ok, reason = selection.available(cfg)
+        if ok:
+            chosen, why = _jev_select(elements, goal, cfg, actions)
+        else:
+            used_fallback = True
+            why = f"selection model unavailable ({reason})"
+    else:
+        used_fallback = True
+        why = "Jev selection disabled (selectWithJev=false)"
+
+    if chosen is None:
+        # Either Jev was unavailable, or it found no fit. Fall back only when the
+        # model could not run at all; a confident "none" is a real answer and
+        # must not be overridden by a string match.
+        if used_fallback:
+            chosen = _best_match(pool, goal)
+        if chosen is None:
+            return None
+
+    out = dict(chosen)
+    out.setdefault("confidence", None)
+    out.setdefault("cost_usd", 0.0)
+    out["selection"] = "fallback" if used_fallback else "jev"
+    out["selection_reason"] = why
+    return out
+
+
+
 def needle_words_in(name: str, words: list[str]) -> bool:
     """True when every goal word appears in the name, in any order."""
     return bool(words) and all(word in name for word in words)
@@ -840,5 +961,5 @@ def needle_words_in(name: str, words: list[str]) -> bool:
 __all__ = [
     "BrowserError", "available", "find_browser", "browser_read",
     "browser_click", "browser_type", "browser_navigate", "browser_search",
-    "load_config",
+    "load_config", "select_element",
 ]

@@ -7,6 +7,8 @@
   "session": "qwen",
   "clickRoute": "dom_event",
   "maxElements": 60,
+  "selectWithJev": true,
+  "minConfidence": 0.6,
   "searchEngine": "https://duckduckgo.com",
   "audit": true
 }

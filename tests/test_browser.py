@@ -55,6 +55,8 @@ class ConfigTest(unittest.TestCase):
 
 
 class BrowserMatchTest(unittest.TestCase):
+    """The deterministic fallback scorer (used only when Jev is unavailable)."""
+
     def test_exact_name_beats_role_match(self):
         elements = [
             {"ref": "a", "role": "button", "name": "Submit"},
@@ -418,6 +420,107 @@ class MultiWindowTest(unittest.TestCase):
                 mock.patch.object(browser, "_prepare"):
             result = browser._with_browser(self.cfg, lambda w: w)
         self.assertEqual(result["window_id"], 2)
+
+
+class BrowserSelectionTest(unittest.TestCase):
+    """Element selection: Jev first, deterministic fallback when it cannot run."""
+
+    def setUp(self):
+        self.cfg = dict(browser.DEFAULT_CONFIG)
+
+    def _patch_jev(self, payload):
+        return mock.patch.object(browser.selection, "ask", return_value=payload)
+
+    def test_jev_picks_the_intended_element(self):
+        elements = [
+            {"ref": "p1:1", "role": "combobox", "name": "Search with DuckDuckGo",
+             "actions": ["click", "type", "pointer"]},
+            {"ref": "p1:2", "role": "button", "name": "Search",
+             "actions": ["click", "pointer"]},
+        ]
+        payload = {"answers": {"candidate": {
+            "choice": "p1:2", "confidence": 0.93,
+            "probabilities": {"p1:2": 0.93, "p1:1": 0.07, "none": 0.0}}},
+            "usage": {"cost": 0.00004}}
+        with self._patch_jev(payload), \
+                mock.patch.object(browser.selection, "available",
+                                  return_value=(True, "")):
+            chosen = browser.select_element(elements, "the Search button", self.cfg,
+                                            browser.CLICK_ACTIONS)
+        self.assertEqual(chosen["ref"], "p1:2")
+        self.assertEqual(chosen["selection"], "jev")
+        self.assertEqual(chosen["confidence"], 0.93)
+        self.assertAlmostEqual(chosen["cost_usd"], 0.00004)
+
+    def test_jev_none_is_respected_not_overridden(self):
+        # A confident "none" is a real answer: do NOT fall back to a string match
+        # that would click something plausible instead.
+        elements = [{"ref": "p1:1", "role": "button", "name": "Cancel",
+                     "actions": ["click"]}]
+        payload = {"answers": {"candidate": {"choice": "none", "confidence": 0.9}}}
+        with self._patch_jev(payload), \
+                mock.patch.object(browser.selection, "available",
+                                  return_value=(True, "")):
+            chosen = browser.select_element(elements, "the Save button", self.cfg,
+                                            browser.CLICK_ACTIONS)
+        self.assertIsNone(chosen)
+
+    def test_low_confidence_is_not_acted_on(self):
+        elements = [{"ref": "p1:1", "role": "button", "name": "Maybe",
+                     "actions": ["click"]}]
+        payload = {"answers": {"candidate": {"choice": "p1:1", "confidence": 0.2}}}
+        cfg = dict(self.cfg, minConfidence=0.6)
+        with self._patch_jev(payload), \
+                mock.patch.object(browser.selection, "available",
+                                  return_value=(True, "")):
+            chosen = browser.select_element(elements, "something", cfg,
+                                            browser.CLICK_ACTIONS)
+        self.assertIsNone(chosen)
+
+    def test_falls_back_when_jev_unavailable(self):
+        # Selection must DEGRADE, not break: no key -> deterministic scorer, and
+        # the result says so.
+        elements = [
+            {"ref": "p1:1", "role": "combobox", "name": "Search with DuckDuckGo",
+             "actions": ["click", "type"]},
+            {"ref": "p1:2", "role": "button", "name": "Search",
+             "actions": ["click"]},
+        ]
+        with mock.patch.object(browser.selection, "available",
+                               return_value=(False, "no API key")):
+            chosen = browser.select_element(elements, "Search button", self.cfg,
+                                            browser.CLICK_ACTIONS)
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen["selection"], "fallback")
+        self.assertIn("no API key", chosen["selection_reason"])
+
+    def test_only_actionable_elements_are_offered(self):
+        # A readable but non-clickable element must never be a click candidate.
+        elements = [
+            {"ref": "p1:1", "role": "statictext", "name": "Total", "actions": []},
+            {"ref": "p1:2", "role": "button", "name": "Checkout",
+             "actions": ["click"]},
+        ]
+        seen = {}
+
+        def fake_ask(state, criteria, instructions, cfg):
+            seen["criteria"] = criteria
+            return {"answers": {"candidate": {"choice": "p1:2", "confidence": 0.9}}}
+
+        with mock.patch.object(browser.selection, "ask", side_effect=fake_ask), \
+                mock.patch.object(browser.selection, "available",
+                                  return_value=(True, "")):
+            browser.select_element(elements, "checkout", self.cfg,
+                                   browser.CLICK_ACTIONS)
+        self.assertIn("p1:2", seen["criteria"])
+        self.assertNotIn("p1:1", seen["criteria"])
+
+    def test_selectWithJev_false_uses_fallback(self):
+        elements = [{"ref": "p1:1", "role": "button", "name": "Save",
+                     "actions": ["click"]}]
+        cfg = dict(self.cfg, selectWithJev=False)
+        chosen = browser.select_element(elements, "Save", cfg, browser.CLICK_ACTIONS)
+        self.assertEqual(chosen["selection"], "fallback")
 
 
 class BrowserAuditTest(unittest.TestCase):

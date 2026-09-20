@@ -44,7 +44,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import panic, triage
+from . import panic, selection, triage
 
 # --- config ---------------------------------------------------------------
 
@@ -412,12 +412,9 @@ def _jev_ask(cfg: dict, goal: str, window_title: str, candidates: list[Candidate
             for c in candidates
         ],
     }
-    jev_cfg = dict(triage.load_config())
-    # Reuse the triage transport but with this module's model/endpoint/key.
-    for key in ("model", "endpoint", "apiKeyEnv"):
-        jev_cfg[key] = cfg.get(key) or jev_cfg.get(key)
     try:
-        return triage.ask(json.dumps(state, ensure_ascii=False), questions, jev_cfg)
+        return triage.ask(json.dumps(state, ensure_ascii=False), questions,
+                          selection.jev_config(cfg))
     except triage.TriageError as exc:
         raise VisionError(f"selection model unavailable: {exc}")
 
@@ -428,37 +425,25 @@ def select(cfg: dict, goal: str, window: dict, candidates: list[Candidate]) -> d
         raise VisionError("no actionable elements found in this window")
     title = str(window.get("title") or window.get("app_name") or "")
     payload = _jev_ask(cfg, goal, title, candidates)
-    answers = payload.get("answers") or {}
-    choice = answers.get("candidate") or {}
-    chosen_id = str(choice.get("choice") or "none")
-    confidence = float(choice.get("confidence") or 0.0)
     by_id = {c.to_id(): c for c in candidates}
-    if chosen_id == "none" or chosen_id not in by_id:
-        raise VisionError(
-            f"no supplied element matches the goal (model said {chosen_id!r})"
-        )
-    candidate = by_id[chosen_id]
-    if confidence < float(cfg.get("minConfidence", 0.60)):
-        raise VisionError(
-            f"selection not confident enough ({confidence:.2f} < "
-            f"{cfg.get('minConfidence', 0.60)}); use the OCR tools instead"
-        )
+    try:
+        choice = selection.choose(payload, set(by_id), cfg)
+    except selection.SelectionError as exc:
+        raise VisionError(f"{exc}; use the OCR tools instead")
+    candidate = by_id[choice.id]
     return {
         "candidate": candidate,
-        "confidence": confidence,
-        "probabilities": choice.get("probabilities") or {},
-        "cost_usd": float((payload.get("usage") or {}).get("cost") or 0.0),
+        "confidence": choice.confidence,
+        "probabilities": choice.probabilities,
+        "cost_usd": choice.cost_usd,
     }
 
 
 def _ask_yes_no(cfg: dict, state: str, instructions: str) -> dict:
     """One yes/no Noul question over `state` via the same Jev transport."""
     questions = {"yes": {"type": "noul", "instructions": instructions}}
-    jev_cfg = dict(triage.load_config())
-    for key in ("model", "endpoint", "apiKeyEnv"):
-        jev_cfg[key] = cfg.get(key) or jev_cfg.get(key)
     try:
-        return triage.ask(state, questions, jev_cfg)
+        return triage.ask(state, questions, selection.jev_config(cfg))
     except triage.TriageError as exc:
         raise VisionError(f"outcome model unavailable: {exc}")
 
