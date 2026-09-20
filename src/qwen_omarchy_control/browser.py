@@ -42,13 +42,14 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.parse
 import re
 import shutil
 import subprocess
 import time
 from pathlib import Path
 
-from . import panic, selection, triage
+from . import cdp, panic, selection, triage
 
 # --- config ---------------------------------------------------------------
 
@@ -67,13 +68,25 @@ DEFAULT_CONFIG = {
     "clickRoute": "dom_event",
     # Keep the number of elements returned to the model bounded.
     "maxElements": 60,
+    # Direct Chrome DevTools Protocol route, used when Cua cannot bind (i.e.
+    # more than one browser window is open). Same loopback endpoint and same
+    # security boundary as the Cua route; see cdp.py.
+    "useCdpFallback": True,
+    "debugPort": 9222,
     # Pick page elements with Jev (System One) rather than a string match.
     # Falls back to the deterministic scorer when the model is unavailable.
     "selectWithJev": True,
     # Confidence floor for a Jev selection to be acted on.
     "minConfidence": 0.60,
-    # Search engine used by the goal-level browser_search action.
+    # Search engine used by the goal-level browser_search action, and the
+    # URL template that turns a query into a results page. Navigating the
+    # template is the reliable route: it is what a bookmark does, needs no
+    # clicking, and is immune to a site's JS submit widget (measured:
+    # DuckDuckGo's "Search" button is a detached JS control that neither a
+    # scripted click nor a trusted Enter activates). An engine with no
+    # template falls back to typing and submitting interactively.
     "searchEngine": "https://duckduckgo.com",
+    "searchUrl": "https://duckduckgo.com/?q={query}",
     "audit": True,
 }
 
@@ -409,6 +422,200 @@ def _single_window_error(cfg: dict) -> BrowserError:
     )
 
 
+# --- direct CDP route (used when Cua cannot bind) ---------------------------
+#
+# Cua binds one native window to a browser target, and only binds exactly when
+# the browser owns a single window. CDP addresses tabs and does not care how many
+# windows they sit in, so with several windows open this route is used instead.
+# See cdp.py for the full rationale; the security boundary is identical (both
+# rely on the same loopback DevTools port on the logged-in profile).
+
+
+def _cdp_endpoint(cfg: dict) -> str:
+    port = int(cfg.get("debugPort") or 9222)
+    return f"http://127.0.0.1:{port}"
+
+
+def _cdp_pick_page(cfg: dict):
+    """The page the user most likely means.
+
+    Prefers the tab whose title matches the focused native window (Chrome titles
+    a window "<page title> - Google Chrome"), then any tab, so a request is
+    answered about what is on screen rather than an arbitrary background tab.
+    """
+    try:
+        pages = cdp.list_pages(_cdp_endpoint(cfg))
+    except cdp.CdpError as exc:
+        raise BrowserError(
+            f"the browser could not be reached directly over CDP: {exc}. "
+            "Use read_screen (OCR) instead."
+        )
+    if not pages:
+        raise BrowserError("no browser tabs are open")
+    focused = _focused_geometry() or {}
+    needle = str(focused.get("title") or "").replace(" - Google Chrome", "").strip().lower()
+    if needle:
+        for page in pages:
+            if page.title.strip().lower() == needle:
+                return page
+        for page in pages:
+            if needle and needle[:20] in page.title.lower():
+                return page
+    return pages[0]
+
+
+def _cdp_read(cfg: dict, goal: str | None) -> dict:
+    page = _cdp_pick_page(cfg)
+    with cdp.PageSession(page) as session:
+        elements, info = cdp.snapshot(session, int(cfg.get("maxElements", 60)))
+    return {
+        "title": info.get("title"),
+        "url": info.get("url"),
+        "outline": "",
+        "elements": [e.to_dict() for e in elements],
+        "query": goal,
+        "element_count": len(elements),
+        "route_used": "cdp_direct",
+    }
+
+
+def _cdp_select(cfg: dict, page, goal: str, actions: tuple[str, ...]):
+    """Select an element on a CDP page with Jev, then return (element, elements).
+
+    Reuses the same `select_element` used by the Cua route, so selection behaves
+    identically whichever transport reads the page.
+    """
+    with cdp.PageSession(page) as session:
+        elements, _ = cdp.snapshot(session, int(cfg.get("maxElements", 60)))
+    dicts = [e.to_dict() for e in elements]
+    chosen = select_element(dicts, goal, cfg, actions)
+    if chosen is None:
+        return None, dicts
+    # Map the chosen dict back to the Element the session can act on.
+    by_ref = {e.ref: e for e in elements}
+    return by_ref.get(chosen["ref"]), dicts
+
+
+def _cdp_click(cfg: dict, goal: str) -> dict:
+    panic.guard("a browser click")
+    started = time.monotonic()
+    page = _cdp_pick_page(cfg)
+    element, _ = _cdp_select(cfg, page, goal, CLICK_ACTIONS)
+    if element is None:
+        raise BrowserError(f"no page element matched {goal!r}")
+    with cdp.PageSession(page) as session:
+        before = cdp.page_info(session)
+        result = cdp.click_element(session, element)
+        time.sleep(0.8)
+        after = cdp.page_info(session)
+        changed = (before.get("url") != after.get("url")
+                   or before.get("title") != after.get("title"))
+        # A synthetic click does not activate every control (measured on
+        # DuckDuckGo's JS "Search" button: the scripted click left the page
+        # unchanged). If nothing changed and the element was an editable field,
+        # submit with a trusted Enter instead - that is how a search is meant to
+        # be sent, and trusted input is what frameworks actually observe.
+        if not changed and ("type" in element.actions or element.role in
+                            ("textbox", "searchbox", "combobox")):
+            try:
+                cdp.press_enter(session)
+                time.sleep(1.2)
+                after = cdp.page_info(session)
+                changed = (before.get("url") != after.get("url")
+                           or before.get("title") != after.get("title"))
+                if changed:
+                    result = {"delivery": "cdp_trusted_enter"}
+            except cdp.CdpError:
+                pass
+    out = {
+        "clicked": element.to_dict(),
+        "route": result.get("delivery"),
+        "url_before": before.get("url"),
+        "url_after": after.get("url"),
+        "title_after": after.get("title"),
+        "verified": changed,
+        "verification": "satisfied" if changed else "unsatisfied",
+        "verification_reason": (
+            f"page changed to {after.get('title')!r}" if changed
+            else "the page did not visibly change"
+        ),
+        "route_used": "cdp_direct",
+        "elapsed_s": round(time.monotonic() - started, 2),
+    }
+    if cfg.get("audit", True):
+        from . import audit
+        audit.record({
+            "tool": "browser_click", "app": "browser",
+            "window": before.get("title"), "goal": goal,
+            "outcome": out["verification"], "verified": changed,
+            "reason": out["verification_reason"], "cost_usd": 0.0,
+            "takeover": "background", "selection": "jev",
+        })
+    return out
+
+
+def _cdp_type(cfg: dict, text: str, goal: str | None, replace: bool) -> dict:
+    panic.guard("browser typing")
+    started = time.monotonic()
+    page = _cdp_pick_page(cfg)
+    element, elements = _cdp_select(cfg, page, goal or "a text field", TYPE_ACTIONS)
+    if element is None:
+        # No goal: take the first field that accepts typing.
+        first = next((d for d in elements
+                      if "type" in (d.get("actions") or [])), None)
+        if first is None:
+            raise BrowserError("no text field is visible on the page")
+        with cdp.PageSession(page) as session:
+            _, _ = cdp.snapshot(session, int(cfg.get("maxElements", 60)))
+            element = cdp.Element(ref=first["ref"], role=first.get("role", ""),
+                                  name=first.get("name", ""),
+                                  actions=list(first.get("actions") or []))
+    with cdp.PageSession(page) as session:
+        result = cdp.type_into(session, element, text, replace=replace)
+    delivered = int(result.get("delivered_count") or 0)
+    out = {
+        "field": element.to_dict(),
+        "delivered_count": delivered,
+        "route": result.get("delivery"),
+        "replaced": bool(replace),
+        "verified": delivered > 0,
+        "verification": "satisfied" if delivered else "unknown",
+        "verification_reason": (
+            f"{delivered} character(s) delivered into {element.name or 'the field'}"
+            if delivered else "no characters were delivered"
+        ),
+        "route_used": "cdp_direct",
+        "elapsed_s": round(time.monotonic() - started, 2),
+    }
+    if cfg.get("audit", True):
+        from . import audit
+        audit.record({
+            "tool": "browser_type", "app": "browser", "window": page.title,
+            "goal": f"type into {element.name}", "outcome": out["verification"],
+            "verified": delivered > 0, "reason": out["verification_reason"],
+            "cost_usd": 0.0, "takeover": "background",
+        })
+    return out
+
+
+def _cdp_navigate(cfg: dict, url: str) -> dict:
+    panic.guard("a browser navigation")
+    started = time.monotonic()
+    page = _cdp_pick_page(cfg)
+    with cdp.PageSession(page) as session:
+        cdp.navigate(session, url)
+        time.sleep(0.8)
+        after = cdp.page_info(session)
+    return {
+        "url_requested": url,
+        "url_after": after.get("url"),
+        "title_after": after.get("title"),
+        "verified": bool(after.get("url")),
+        "route_used": "cdp_direct",
+        "elapsed_s": round(time.monotonic() - started, 2),
+    }
+
+
 def _bind_and_read(cfg: dict, window: dict,
                    query: str | None = None) -> tuple[str, str, dict]:
     """Mint a (target_id, tab_id) pair and read the page in one sequence.
@@ -505,6 +712,10 @@ def browser_read(goal: str | None = None, cfg: dict | None = None) -> dict:
     """
     cfg = cfg or load_config()
     started = time.monotonic()
+    if cfg.get("useCdpFallback", True) and _multi_window(cfg):
+        out = _cdp_read(cfg, goal)
+        out["elapsed_s"] = round(time.monotonic() - started, 2)
+        return out
 
     def run(window):
         sem = _elements(cfg, window, query=goal)
@@ -533,6 +744,8 @@ def browser_click(goal: str, cfg: dict | None = None,
     cfg = cfg or load_config()
     panic.guard("a browser click")
     started = time.monotonic()
+    if cfg.get("useCdpFallback", True) and _multi_window(cfg):
+        return _cdp_click(cfg, goal)
 
     def run(window):
         target, tab, sem = _bind_and_read(cfg, window, query=goal)
@@ -598,6 +811,8 @@ def browser_type(text: str, goal: str | None = None, cfg: dict | None = None,
     cfg = cfg or load_config()
     panic.guard("browser typing")
     started = time.monotonic()
+    if cfg.get("useCdpFallback", True) and _multi_window(cfg):
+        return _cdp_type(cfg, text, goal, replace)
 
     def run(window):
         target, tab, sem = _bind_and_read(cfg, window, query=goal)
@@ -656,6 +871,8 @@ def browser_navigate(url: str, cfg: dict | None = None) -> dict:
     if not re.match(r"^(https?|about):", url, re.IGNORECASE):
         raise BrowserError("only http:, https: and about: URLs can be opened here")
     started = time.monotonic()
+    if cfg.get("useCdpFallback", True) and _multi_window(cfg):
+        return _cdp_navigate(cfg, url)
 
     def run(window):
         target, tab = _pair(cfg, window)
@@ -705,6 +922,49 @@ def browser_search(query: str, cfg: dict | None = None) -> dict:
         raise BrowserError("that search query is too long")
 
     engine = str(cfg.get("searchEngine") or "https://duckduckgo.com")
+
+    # PREFERRED: the engine's own search-URL template. This is what a bookmark
+    # does - no clicking, no JS widget to activate, and therefore reliable.
+    # Measured: DuckDuckGo's "Search" button is a detached JS control that
+    # neither a scripted click nor a trusted Enter activates, and driving it
+    # interactively failed while the URL form works every time.
+    template = str(cfg.get("searchUrl") or "").strip()
+    if template:
+        url = template.replace("{query}", urllib.parse.quote_plus(query))
+        nav = browser_navigate(url, cfg)
+        ok = bool(nav.get("url_after"))
+        out = {
+            "query": query,
+            "engine": engine,
+            "results_url": nav.get("url_after"),
+            "results_title": nav.get("title_after"),
+            "verified": ok,
+            "verification": "satisfied" if ok else "unsatisfied",
+            "verification_reason": (
+                "opened the search results page" if ok
+                else "the search results page did not load"
+            ),
+            "steps": [{"step": "open_results", "verified": ok,
+                       "url": nav.get("url_after")}],
+            "route_used": nav.get("route_used") or "cua",
+            "elapsed_s": round(time.monotonic() - started, 2),
+        }
+        if cfg.get("audit", True):
+            from . import audit
+            audit.record({
+                "tool": "browser_search", "app": "browser",
+                "window": nav.get("title_after"), "goal": f"search: {query}",
+                "outcome": out["verification"], "verified": ok,
+                "reason": out["verification_reason"], "cost_usd": 0.0,
+                "takeover": "background",
+            })
+        return out
+
+    # No template: drive the engine's own field. Kept for engines where a
+    # template is unknown, and for pages that behave like plain HTML forms.
+    if cfg.get("useCdpFallback", True) and _multi_window(cfg):
+        return _cdp_search(cfg, query, engine, started)
+
     steps: list[dict] = []
 
     nav = browser_navigate(engine, cfg)
@@ -747,6 +1007,77 @@ def browser_search(query: str, cfg: dict | None = None) -> dict:
             "outcome": "satisfied", "verified": True,
             "reason": out["verification_reason"],
             "cost_usd": 0.0, "takeover": "background",
+        })
+    return out
+
+
+def _cdp_search(cfg: dict, query: str, engine: str, started: float) -> dict:
+    """A web search over direct CDP, in one page session.
+
+    Verified step by step and reported honestly, exactly like the Cua path. The
+    submit is a trusted Enter on the focused field: measured, a scripted click on
+    a JS submit control can silently do nothing.
+    """
+    page = _cdp_pick_page(cfg)
+    steps: list[dict] = []
+    with cdp.PageSession(page) as session:
+        cdp.navigate(session, engine)
+        time.sleep(1.5)
+        info = cdp.page_info(session)
+        steps.append({"step": "navigate", "verified": bool(info.get("url")),
+                      "url": info.get("url")})
+        if not info.get("url"):
+            return _search_failure("could not open the search engine", steps,
+                                   started, cfg, query)
+
+        elements, _ = cdp.snapshot(session, int(cfg.get("maxElements", 60)))
+        chosen = select_element([e.to_dict() for e in elements],
+                                "the search box", cfg, TYPE_ACTIONS)
+        by_ref = {e.ref: e for e in elements}
+        field = by_ref.get(chosen["ref"]) if chosen else None
+        if field is None:
+            return _search_failure("could not find the search box", steps,
+                                   started, cfg, query)
+        cdp.focus_field(session, field)
+        typed = cdp.type_into(session, field, query)
+        steps.append({"step": "type", "verified": typed["delivered_count"] > 0,
+                      "field": field.name})
+        if not typed["delivered_count"]:
+            return _search_failure("could not type into the search box", steps,
+                                   started, cfg, query)
+
+        before = cdp.page_info(session)
+        cdp.press_enter(session)
+        time.sleep(2.0)
+        after = cdp.page_info(session)
+        changed = (before.get("url") != after.get("url")
+                   or before.get("title") != after.get("title"))
+        steps.append({"step": "submit", "verified": changed,
+                      "url": after.get("url")})
+        if not changed:
+            return _search_failure("could not submit the search", steps,
+                                   started, cfg, query)
+
+    out = {
+        "query": query,
+        "engine": engine,
+        "results_url": after.get("url"),
+        "results_title": after.get("title"),
+        "verified": True,
+        "verification": "satisfied",
+        "verification_reason": "the search results page loaded",
+        "steps": steps,
+        "route_used": "cdp_direct",
+        "elapsed_s": round(time.monotonic() - started, 2),
+    }
+    if cfg.get("audit", True):
+        from . import audit
+        audit.record({
+            "tool": "browser_search", "app": "browser",
+            "window": after.get("title"), "goal": f"search: {query}",
+            "outcome": "satisfied", "verified": True,
+            "reason": out["verification_reason"], "cost_usd": 0.0,
+            "takeover": "background",
         })
     return out
 

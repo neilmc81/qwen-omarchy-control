@@ -477,7 +477,23 @@ want them.
   "Search" button, so "click Search" filled the field instead of submitting.
   Naming a role ("Search button", "the search field") now weights the matching
   role.
-- **A real ceiling: the typed path needs a single browser window.** Measured:
+- **The single-window ceiling is solved by a direct-CDP fallback.** Cua binds
+  one *native window* to a browser target, and only binds exactly when the
+  browser owns one window; with two it falls back to a title-only binding and
+  refuses. That is a binding artefact, not a CDP limit: CDP addresses tabs and
+  does not care how many windows they sit in. When more than one window is
+  open the tools now talk CDP directly (`cdp.py` + `ws.py`, both stdlib-only),
+  picking the tab whose title matches the focused window. Verified with two
+  windows open: read, click-with-verification, and a full search all work.
+  The security boundary is unchanged - both routes use the same loopback
+  DevTools port on the logged-in profile. Disable with `useCdpFallback: false`.
+- **A search is a URL, not a click.** `browser_search` navigates the engine's
+  `searchUrl` template (`?q={query}`) rather than driving the box and button.
+  Measured: DuckDuckGo's "Search" button is a detached JS widget (`type=button`,
+  no owning form) that neither a scripted click nor a trusted Enter activates,
+  while the template form works every time. An engine with no template falls
+  back to the interactive route.
+- Superseded note (kept for the record) - the typed path needs a single browser window for the Cua route alone. Measured:
   with one top-level Chrome window the driver binds `exact`; with two it binds
   `heuristic` (title-only) and refuses every element read and mutation —
   *"mutations require an exact bounds- or cardinality-correlated binding"* —

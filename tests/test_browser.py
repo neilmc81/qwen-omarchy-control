@@ -331,7 +331,30 @@ class BrowserSearchTest(unittest.TestCase):
         with self.assertRaises(browser.BrowserError):
             browser.browser_search("x" * 500, cfg=self.cfg)
 
+    def setUpInteractive(self):
+        """Force the Cua interactive route for these tests.
+
+        searchUrl="" skips the URL-template route, and _multi_window is patched
+        False so the live multi-window check (there really is a browser running
+        during local testing) does not divert to the CDP route.
+        """
+        self.cfg = dict(self.cfg, searchUrl="", useCdpFallback=False)
+
+    def test_template_route_opens_the_results_url(self):
+        # Default behaviour: a search is a URL, like a bookmark. This is the
+        # reliable route and needs no clicking.
+        with mock.patch.object(browser, "browser_navigate",
+                               return_value={"url_after": "https://ddg.test/?q=x",
+                                             "title_after": "x at DuckDuckGo",
+                                             "route_used": "cua"}) as nav:
+            result = browser.browser_search("x y", cfg=self.cfg)
+        self.assertTrue(result["verified"])
+        # The query is URL-encoded into the template.
+        self.assertIn("x+y", nav.call_args[0][0])
+        self.assertEqual([s["step"] for s in result["steps"]], ["open_results"])
+
     def test_composes_and_verifies_all_steps(self):
+        self.setUpInteractive()
         with mock.patch.object(browser, "browser_navigate",
                                return_value={"verified": True,
                                              "url_after": "https://ddg.test/"}), \
@@ -348,6 +371,7 @@ class BrowserSearchTest(unittest.TestCase):
                          ["navigate", "type", "submit"])
 
     def test_stops_and_reports_which_step_failed(self):
+        self.setUpInteractive()
         # The whole point of a goal-level action: never claim success if a step
         # did not verify, and say which one.
         with mock.patch.object(browser, "browser_navigate",
@@ -363,6 +387,7 @@ class BrowserSearchTest(unittest.TestCase):
         click.assert_not_called()
 
     def test_failed_navigation_does_not_type(self):
+        self.setUpInteractive()
         with mock.patch.object(browser, "browser_navigate",
                                return_value={"verified": False}), \
                 mock.patch.object(browser, "browser_type") as typed:

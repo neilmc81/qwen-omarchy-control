@@ -6,9 +6,12 @@
   "driverTimeoutMs": 45000,
   "session": "qwen",
   "clickRoute": "dom_event",
+  "useCdpFallback": true,
+  "debugPort": 9222,
   "maxElements": 60,
   "selectWithJev": true,
   "minConfidence": 0.6,
   "searchEngine": "https://duckduckgo.com",
+  "searchUrl": "https://duckduckgo.com/?q={query}",
   "audit": true
 }
