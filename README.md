@@ -461,6 +461,15 @@ want them.
   "Search" button, so "click Search" filled the field instead of submitting.
   Naming a role ("Search button", "the search field") now weights the matching
   role.
+- **A real ceiling: the typed path needs a single browser window.** Measured:
+  with one top-level Chrome window the driver binds `exact`; with two it binds
+  `heuristic` (title-only) and refuses every element read and mutation —
+  *"mutations require an exact bounds- or cardinality-correlated binding"* —
+  even when the windows have distinct titles, different sizes, or sit on
+  different workspaces. `browser_read` returns no elements in that state, so the
+  tools now **report this honestly** ("the browser has more than one window
+  open…") instead of returning an empty page. Close the extra windows, or use
+  `read_screen` for OCR. This is the main practical limitation of the feature.
 
 ## Pre-dispatch agent triage (dormant, off by default)
 

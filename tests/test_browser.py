@@ -191,9 +191,9 @@ class BrowserActionTest(unittest.TestCase):
 
     def test_click_reuses_the_ref_minted_pair(self):
         calls = []
-        with mock.patch.object(browser, "find_browser",
-                               return_value={"pid": 9, "window_id": 2,
-                                             "debug_port": 9222}), \
+        with mock.patch.object(browser, "_bind_candidates",
+                               return_value=[{"pid": 9, "window_id": 2,
+                                              "debug_port": 9222}]), \
                 mock.patch.object(browser, "_run_driver",
                                   side_effect=self._driver(calls)), \
                 mock.patch.object(browser, "_debug_port_for", return_value=9222), \
@@ -227,8 +227,8 @@ class BrowserActionTest(unittest.TestCase):
                 return {"route": "dom"}
             return {"status": "ok"}
 
-        with mock.patch.object(browser, "find_browser",
-                               return_value={"pid": 9, "window_id": 2}), \
+        with mock.patch.object(browser, "_bind_candidates",
+                               return_value=[{"pid": 9, "window_id": 2}]), \
                 mock.patch.object(browser, "_run_driver", side_effect=fake), \
                 mock.patch.object(browser, "_debug_port_for", return_value=9222), \
                 mock.patch("time.sleep"):
@@ -253,8 +253,8 @@ class BrowserActionTest(unittest.TestCase):
                         "delivery": {"delivered_count": 5}}
             return {"status": "ok"}
 
-        with mock.patch.object(browser, "find_browser",
-                               return_value={"pid": 9, "window_id": 2}), \
+        with mock.patch.object(browser, "_bind_candidates",
+                               return_value=[{"pid": 9, "window_id": 2}]), \
                 mock.patch.object(browser, "_run_driver", side_effect=fake), \
                 mock.patch("time.sleep"):
             result = browser.browser_type("hello", goal="search", cfg=self.cfg)
@@ -288,8 +288,8 @@ class BrowserSafetyTest(unittest.TestCase):
     def test_freeze_does_not_block_read(self):
         # Looking is always allowed; only acting is frozen.
         panic.set_panic()
-        with mock.patch.object(browser, "find_browser",
-                               return_value={"pid": 9, "window_id": 2}), \
+        with mock.patch.object(browser, "_bind_candidates",
+                               return_value=[{"pid": 9, "window_id": 2}]), \
                 mock.patch.object(browser, "_run_driver",
                                   side_effect=lambda c, t, a: (
                                       {"status": "ok", "target_id": "bt-1",
@@ -370,6 +370,53 @@ class BrowserSearchTest(unittest.TestCase):
         typed.assert_not_called()
 
 
+class MultiWindowTest(unittest.TestCase):
+    """The typed path is a single-window capability; say so, do not guess.
+
+    Measured on this machine: with one top-level browser window the driver binds
+    `exact`; with two it binds `heuristic` (title-only) and refuses every element
+    read and mutation with `authorization_host_failed: ... mutations require an
+    exact bounds- or cardinality-correlated binding`. Returning an empty page
+    instead of an honest error would be the worst outcome, so this pins the error.
+    """
+
+    def setUp(self):
+        self.cfg = dict(browser.DEFAULT_CONFIG)
+
+    def test_two_windows_same_pid_is_reported_not_guessed(self):
+        windows = json.dumps({"windows": [
+            {"pid": 9, "window_id": 2, "title": "A", "app_name": "google-chrome",
+             "is_on_screen": True},
+            {"pid": 9, "window_id": 3, "title": "B", "app_name": "google-chrome",
+             "is_on_screen": True}]})
+
+        def fake_run(argv, **kwargs):
+            proc = mock.Mock(returncode=0, stdout=windows, stderr="")
+            return proc
+
+        with mock.patch("subprocess.run", side_effect=fake_run), \
+                mock.patch.object(browser, "_debug_port_for", return_value=9222):
+            with self.assertRaises(browser.BrowserError) as ctx:
+                browser._with_browser(self.cfg, lambda w: w)
+        message = str(ctx.exception)
+        self.assertIn("more than one window", message)
+        self.assertIn("read_screen", message)
+
+    def test_single_window_is_not_flagged(self):
+        windows = json.dumps({"windows": [
+            {"pid": 9, "window_id": 2, "title": "A", "app_name": "google-chrome",
+             "is_on_screen": True}]})
+
+        def fake_run(argv, **kwargs):
+            return mock.Mock(returncode=0, stdout=windows, stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run), \
+                mock.patch.object(browser, "_debug_port_for", return_value=9222), \
+                mock.patch.object(browser, "_prepare"):
+            result = browser._with_browser(self.cfg, lambda w: w)
+        self.assertEqual(result["window_id"], 2)
+
+
 class BrowserAuditTest(unittest.TestCase):
     def test_click_is_recorded_in_the_audit_log(self):
         from qwen_omarchy_control import audit
@@ -378,8 +425,8 @@ class BrowserAuditTest(unittest.TestCase):
         audit.LOG_FILE = Path(tmp.name) / "trajectory.jsonl"
         try:
             cfg = dict(browser.DEFAULT_CONFIG)
-            with mock.patch.object(browser, "find_browser",
-                                   return_value={"pid": 9, "window_id": 2}), \
+            with mock.patch.object(browser, "_bind_candidates",
+                                   return_value=[{"pid": 9, "window_id": 2}]), \
                     mock.patch.object(browser, "_run_driver",
                                       side_effect=lambda c, t, a: (
                                           {"status": "ok", "target_id": "bt-1",

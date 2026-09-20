@@ -216,29 +216,62 @@ def _debug_port_for(pid: int) -> int | None:
     return None
 
 
-def find_browser(cfg: dict | None = None) -> dict:
-    """Locate a browser that can be driven by CDP. Raises BrowserError if not.
+def _focused_geometry() -> dict | None:
+    """The focused window's pid/title/size from Hyprland, for disambiguation.
 
-    Returns the pid/window_id plus the debug port. The port matters: a browser
-    without one is not an error the caller can fix mid-task, so the message says
-    exactly what to change.
+    cua's window list carries no z-order or focus flag (measured: `z_index` is
+    null for every window), so with several identically-titled Chrome windows
+    there is nothing in the list itself to say which one the user is looking at.
+    Hyprland knows, and its pid matches cua's entries.
+    """
+    from .desktop import DesktopController
+    try:
+        active = DesktopController().get_active_window()
+    except Exception:  # noqa: BLE001 - focus lookup must never break targeting
+        return None
+    return active if active.get("address") else None
+
+
+def _bind_candidates(cfg: dict) -> list[dict]:
+    """Browser windows ordered by how likely they are the one to drive.
+
+    Measured on this machine: cua-driver refuses to bind when a pid has several
+    *identically titled* top-level windows (`browser_binding_ambiguous` /
+    `authorization_host_failed`), but binds any of them fine when their titles
+    differ. A browser window usually has a real page title, so in practice this
+    is the blank-tab case. The fix is not to give up: try the best window, and if
+    the driver refuses to attribute it, fall back to the next candidate.
     """
     cfg = cfg or load_config()
-    ok, reason = available(cfg)
-    if not ok:
-        raise BrowserError(reason)
     windows = _browser_windows(cfg)
     if not windows:
         raise BrowserError("no browser window is open")
 
-    # Prefer a window whose pid has a debug port; that is the only bindable kind.
+    focused = _focused_geometry()
+    active_pid = int((focused or {}).get("pid") or 0)
+
+    def rank(window: dict) -> tuple:
+        pid = int(window.get("pid") or 0)
+        title = str(window.get("title") or "")
+        # Focused first, then on-screen, then a *titled* window over a blank one
+        # (distinct titles are what makes binding possible), then area.
+        return (
+            0 if (active_pid and pid == active_pid and window.get("is_on_screen")) else 1,
+            0 if window.get("is_on_screen") else 1,
+            0 if (title and title.strip()) else 1,
+            -(int(window.get("width") or 0) * int(window.get("height") or 0)),
+            int(window.get("window_id") or 0),
+        )
+
+    bindable = []
     for window in windows:
         pid = int(window.get("pid") or 0)
         port = _debug_port_for(pid) if pid else None
         if port:
-            window = dict(window)
-            window["debug_port"] = port
-            return window
+            window = dict(window, debug_port=port)
+            bindable.append(window)
+    if bindable:
+        return sorted(bindable, key=rank)
     names = ", ".join(sorted({str(w.get("app_name")) for w in windows}))
     raise BrowserError(
         f"a browser is open ({names}) but without a DevTools endpoint, so its "
@@ -246,6 +279,17 @@ def find_browser(cfg: dict | None = None) -> dict:
         "--remote-debugging-port=9222 (see README: Typed browser control). "
         "Until then the OCR tools still work."
     )
+
+
+def find_browser(cfg: dict | None = None) -> dict:
+    """The best browser window to drive. Raises BrowserError if none is bindable.
+
+    Returns the pid/window_id plus the debug port. When several browser windows
+    share a pid, the focused one is preferred; note this only chooses the first
+    *candidate* - the caller retries the rest if the driver refuses to attribute
+    it (see `_bind_candidates`).
+    """
+    return _bind_candidates(cfg)[0]
 
 
 def available(cfg: dict | None = None) -> tuple[bool, str]:
@@ -303,7 +347,56 @@ def _pair(cfg: dict, window: dict) -> tuple[str, str]:
     tabs = state.get("tabs") or []
     if not target or not tabs:
         raise BrowserError("the browser exposed no target/tab to bind to")
-    return str(target), str(tabs[0].get("tab_id"))
+    # Prefer the active tab, exactly as _bind_and_read does; tabs[0] is not
+    # necessarily the one the user is looking at.
+    tab_info = next((t for t in tabs if t.get("active")), tabs[0])
+    return str(target), str(tab_info.get("tab_id"))
+
+
+_AMBIGUOUS = ("browser_binding_ambiguous", "authorization_host_failed",
+              "browser_binding_stale", "browser_consent_required",
+              "heuristic")
+
+
+def _is_ambiguity(exc: Exception) -> bool:
+    """True when the driver could not attribute a window, not a real failure.
+
+    These refusals mean "this window could not be proven", which is retryable
+    against another window; a missing endpoint or a bad key is not.
+    """
+    text = str(exc)
+    return any(code in text for code in _AMBIGUOUS)
+
+
+def _multi_window(cfg: dict) -> bool:
+    """True when a browser pid owns more than one top-level window.
+
+    Measured on this machine: cua-driver only binds *exactly* (bounds-correlated)
+    when the browser exposes a single top-level window. With two, its binding is
+    `heuristic` (title-only) and it refuses every element read and mutation with
+    `authorization_host_failed: this binding is heuristic (title-only) —
+    mutations require an exact bounds- or cardinality-correlated binding`. So the
+    typed path is a single-window capability, and the honest thing is to say so
+    rather than quietly returning an empty page.
+    """
+    try:
+        windows = _browser_windows(cfg)
+    except BrowserError:
+        return False
+    counts: dict[int, int] = {}
+    for window in windows:
+        pid = int(window.get("pid") or 0)
+        counts[pid] = counts.get(pid, 0) + 1
+    return any(count > 1 for count in counts.values())
+
+
+def _single_window_error(cfg: dict) -> BrowserError:
+    return BrowserError(
+        "the browser has more than one window open, and the precise (DOM) tools "
+        "need exactly one to bind it exactly - with several, the driver falls "
+        "back to a title-only binding and refuses to read or act. Close the "
+        "other browser windows, or use read_screen for OCR instead."
+    )
 
 
 def _bind_and_read(cfg: dict, window: dict,
@@ -322,7 +415,11 @@ def _bind_and_read(cfg: dict, window: dict,
     tabs = state.get("tabs") or []
     if not target or not tabs:
         raise BrowserError("the browser exposed no target/tab to bind to")
-    tab = str(tabs[0].get("tab_id"))
+    # Prefer the ACTIVE tab. Taking tabs[0] blindly was a real bug: a window with
+    # several tabs can have the active one anywhere in the list, so browser_read
+    # would report the wrong page (measured: it read an unrelated financial tab).
+    tab_info = next((t for t in tabs if t.get("active")), tabs[0])
+    tab = str(tab_info.get("tab_id"))
     extra = {"target_id": str(target), "tab_id": tab,
              "snapshot_format": "semantic_v2"}
     if query:
@@ -331,6 +428,34 @@ def _bind_and_read(cfg: dict, window: dict,
         "session": str(cfg.get("session") or "qwen"), **extra,
     })
     return str(target), tab, sem
+
+
+def _with_browser(cfg: dict, fn):
+    """Run `fn(window)` against the browser, refusing honestly when unusable.
+
+    The typed path needs an exact binding, which the driver only produces when
+    the browser owns a single top-level window. With several, every window binds
+    heuristically and every element read/mutation is refused, so walk the
+    candidates is pointless - say so clearly instead of returning an empty page.
+    A pid with several *identically titled* windows is still retried, because a
+    transient attribution failure there is worth one more candidate.
+    """
+    if _multi_window(cfg):
+        raise _single_window_error(cfg)
+    candidates = _bind_candidates(cfg)
+    last: Exception | None = None
+    for window in candidates:
+        try:
+            _prepare(cfg, window)
+            return fn(window)
+        except BrowserError as exc:
+            if not _is_ambiguity(exc):
+                raise
+            last = exc
+            continue
+    if last is not None:
+        raise last
+    raise BrowserError("no browser window could be bound")
 
 
 def _elements(cfg: dict, window: dict, query: str | None = None) -> dict:
@@ -370,18 +495,20 @@ def browser_read(goal: str | None = None, cfg: dict | None = None) -> dict:
     """
     cfg = cfg or load_config()
     started = time.monotonic()
-    window = find_browser(cfg)
-    _prepare(cfg, window)
-    sem = _elements(cfg, window, query=goal)
-    view = _compact(sem, cfg)
-    return {
-        **view,
-        "pid": window.get("pid"),
-        "debug_port": window.get("debug_port"),
-        "query": goal,
-        "element_count": len(view["elements"]),
-        "elapsed_s": round(time.monotonic() - started, 2),
-    }
+
+    def run(window):
+        sem = _elements(cfg, window, query=goal)
+        view = _compact(sem, cfg)
+        return {
+            **view,
+            "pid": window.get("pid"),
+            "debug_port": window.get("debug_port"),
+            "query": goal,
+            "element_count": len(view["elements"]),
+            "elapsed_s": round(time.monotonic() - started, 2),
+        }
+
+    return _with_browser(cfg, run)
 
 
 def browser_click(goal: str, cfg: dict | None = None,
@@ -396,55 +523,56 @@ def browser_click(goal: str, cfg: dict | None = None,
     cfg = cfg or load_config()
     panic.guard("a browser click")
     started = time.monotonic()
-    window = find_browser(cfg)
-    _prepare(cfg, window)
 
-    target, tab, sem = _bind_and_read(cfg, window, query=goal)
-    view = _compact(sem, cfg)
-    match = _best_match(view["elements"], goal)
-    if match is None:
-        raise BrowserError(
-            f"no page element matched {goal!r}; "
-            f"{len(view['elements'])} element(s) were visible"
-        )
-    ref = match["ref"]
-    url_before = view.get("url")
-    title_before = view.get("title")
+    def run(window):
+        target, tab, sem = _bind_and_read(cfg, window, query=goal)
+        view = _compact(sem, cfg)
+        match = _best_match(view["elements"], goal)
+        if match is None:
+            raise BrowserError(
+                f"no page element matched {goal!r}; "
+                f"{len(view['elements'])} element(s) were visible"
+            )
+        ref = match["ref"]
+        url_before = view.get("url")
+        title_before = view.get("title")
 
-    result = _run_driver(cfg, "browser_click", {
-        "session": str(cfg.get("session") or "qwen"),
-        "target_id": target, "tab_id": tab, "ref": ref,
-        "input_route": route or cfg.get("clickRoute") or "dom_event",
-    })
-
-    # Verify by re-reading: dispatch success is not activation.
-    time.sleep(0.8)
-    after = _compact(_elements(cfg, window), cfg)
-    changed = (after.get("url") != url_before
-               or after.get("title") != title_before)
-    out = {
-        "clicked": match,
-        "route": result.get("route") or (route or cfg.get("clickRoute")),
-        "url_before": url_before,
-        "url_after": after.get("url"),
-        "title_after": after.get("title"),
-        "verified": changed,
-        "verification": "satisfied" if changed else "unsatisfied",
-        "verification_reason": (
-            f"page changed to {after.get('title')!r}" if changed
-            else "the page did not visibly change"
-        ),
-        "elapsed_s": round(time.monotonic() - started, 2),
-    }
-    if cfg.get("audit", True):
-        from . import audit
-        audit.record({
-            "tool": "browser_click", "app": "browser", "window": title_before,
-            "goal": goal, "outcome": out["verification"],
-            "verified": changed, "reason": out["verification_reason"],
-            "cost_usd": 0.0, "takeover": "background",
+        result = _run_driver(cfg, "browser_click", {
+            "session": str(cfg.get("session") or "qwen"),
+            "target_id": target, "tab_id": tab, "ref": ref,
+            "input_route": route or cfg.get("clickRoute") or "dom_event",
         })
-    return out
+
+        # Verify by re-reading: dispatch success is not activation.
+        time.sleep(0.8)
+        after = _compact(_elements(cfg, window), cfg)
+        changed = (after.get("url") != url_before
+                   or after.get("title") != title_before)
+        out = {
+            "clicked": match,
+            "route": result.get("route") or (route or cfg.get("clickRoute")),
+            "url_before": url_before,
+            "url_after": after.get("url"),
+            "title_after": after.get("title"),
+            "verified": changed,
+            "verification": "satisfied" if changed else "unsatisfied",
+            "verification_reason": (
+                f"page changed to {after.get('title')!r}" if changed
+                else "the page did not visibly change"
+            ),
+            "elapsed_s": round(time.monotonic() - started, 2),
+        }
+        if cfg.get("audit", True):
+            from . import audit
+            audit.record({
+                "tool": "browser_click", "app": "browser", "window": title_before,
+                "goal": goal, "outcome": out["verification"],
+                "verified": changed, "reason": out["verification_reason"],
+                "cost_usd": 0.0, "takeover": "background",
+            })
+        return out
+
+    return _with_browser(cfg, run)
 
 
 def browser_type(text: str, goal: str | None = None, cfg: dict | None = None,
@@ -457,53 +585,54 @@ def browser_type(text: str, goal: str | None = None, cfg: dict | None = None,
     cfg = cfg or load_config()
     panic.guard("browser typing")
     started = time.monotonic()
-    window = find_browser(cfg)
-    _prepare(cfg, window)
 
-    target, tab, sem = _bind_and_read(cfg, window, query=goal)
-    view = _compact(sem, cfg)
-    if goal:
-        match = _best_match(view["elements"], goal)
-        if match is None:
-            raise BrowserError(f"no page field matched {goal!r}")
-    else:
-        match = _first_input(view["elements"])
-        if match is None:
-            raise BrowserError("no text field is visible on the page")
-    ref = match["ref"]
+    def run(window):
+        target, tab, sem = _bind_and_read(cfg, window, query=goal)
+        view = _compact(sem, cfg)
+        if goal:
+            match = _best_match(view["elements"], goal)
+            if match is None:
+                raise BrowserError(f"no page field matched {goal!r}")
+        else:
+            match = _first_input(view["elements"])
+            if match is None:
+                raise BrowserError("no text field is visible on the page")
+        ref = match["ref"]
 
-    result = _run_driver(cfg, "browser_type", {
-        "session": str(cfg.get("session") or "qwen"),
-        "target_id": target, "tab_id": tab, "ref": ref, "text": str(text),
-        "replace": bool(replace),
-    })
-    delivered = int(((result.get("delivery") or {}).get("delivered_count")) or 0)
-
-    out = {
-        "field": match,
-        "delivered_count": delivered,
-        "route": result.get("route"),
-        "replaced": bool(replace),
-        # Typing is confirmed by the driver's delivered count, not a page diff:
-        # the field value is not always re-readable, so report it honestly.
-        "verified": delivered > 0,
-        "verification": "satisfied" if delivered else "unknown",
-        "verification_reason": (
-            f"{delivered} character(s) delivered into {match.get('name') or 'the field'}"
-            if delivered else "the driver delivered no characters"
-        ),
-        "elapsed_s": round(time.monotonic() - started, 2),
-    }
-    if cfg.get("audit", True):
-        from . import audit
-        audit.record({
-            "tool": "browser_type", "app": "browser",
-            "window": view.get("title"), "goal": f"type into {match.get('name')}",
-            "outcome": "satisfied" if delivered else "unknown",
-            "verified": delivered > 0, "reason": f"{delivered} chars delivered",
-            "cost_usd": 0.0, "takeover": "background",
+        result = _run_driver(cfg, "browser_type", {
+            "session": str(cfg.get("session") or "qwen"),
+            "target_id": target, "tab_id": tab, "ref": ref, "text": str(text),
+            "replace": bool(replace),
         })
-    return out
+        delivered = int(((result.get("delivery") or {}).get("delivered_count")) or 0)
+
+        out = {
+            "field": match,
+            "delivered_count": delivered,
+            "route": result.get("route"),
+            "replaced": bool(replace),
+            # Typing is confirmed by the driver's delivered count, not a page
+            # diff: the field value is not always re-readable, so report honestly.
+            "verified": delivered > 0,
+            "verification": "satisfied" if delivered else "unknown",
+            "verification_reason": (
+                f"{delivered} character(s) delivered into {match.get('name') or 'the field'}"
+                if delivered else "the driver delivered no characters"
+            ),
+            "elapsed_s": round(time.monotonic() - started, 2),
+        }
+        if cfg.get("audit", True):
+            from . import audit
+            audit.record({
+                "tool": "browser_type", "app": "browser",
+                "window": view.get("title"), "goal": f"type into {match.get('name')}",
+                "outcome": "satisfied" if delivered else "unknown",
+                "verified": delivered > 0, "reason": f"{delivered} chars delivered",
+                "cost_usd": 0.0, "takeover": "background",
+            })
+        return out
+
+    return _with_browser(cfg, run)
 
 
 def browser_navigate(url: str, cfg: dict | None = None) -> dict:
@@ -514,22 +643,24 @@ def browser_navigate(url: str, cfg: dict | None = None) -> dict:
     if not re.match(r"^(https?|about):", url, re.IGNORECASE):
         raise BrowserError("only http:, https: and about: URLs can be opened here")
     started = time.monotonic()
-    window = find_browser(cfg)
-    _prepare(cfg, window)
-    target, tab = _pair(cfg, window)
-    _run_driver(cfg, "browser_navigate", {
-        "session": str(cfg.get("session") or "qwen"),
-        "target_id": target, "tab_id": tab, "url": url,
-    })
-    time.sleep(0.8)
-    after = _compact(_elements(cfg, window), cfg)
-    return {
-        "url_requested": url,
-        "url_after": after.get("url"),
-        "title_after": after.get("title"),
-        "verified": bool(after.get("url")),
-        "elapsed_s": round(time.monotonic() - started, 2),
-    }
+
+    def run(window):
+        target, tab = _pair(cfg, window)
+        _run_driver(cfg, "browser_navigate", {
+            "session": str(cfg.get("session") or "qwen"),
+            "target_id": target, "tab_id": tab, "url": url,
+        })
+        time.sleep(0.8)
+        after = _compact(_elements(cfg, window), cfg)
+        return {
+            "url_requested": url,
+            "url_after": after.get("url"),
+            "title_after": after.get("title"),
+            "verified": bool(after.get("url")),
+            "elapsed_s": round(time.monotonic() - started, 2),
+        }
+
+    return _with_browser(cfg, run)
 
 
 def browser_search(query: str, cfg: dict | None = None) -> dict:

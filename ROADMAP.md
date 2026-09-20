@@ -157,10 +157,14 @@ Typed browser control is live: `browser_read`, `browser_click`, `browser_type`,
 `browser_navigate`, and the goal-level `browser_search`, all through cua-driver's
 CDP binding. Chrome is no longer an OCR-only app. Requires Chrome to expose a
 DevTools endpoint and cua-driver to hold the `existing-profile` grant; see
-README → "Typed browser control". Two traps found and fixed in the process:
-stale page refs (re-reading between choosing and clicking turns the click into a
-silent no-op) and role disambiguation ("Search" picked the combobox over the
-button).
+README → "Typed browser control". Three findings from live testing: stale page
+refs (re-reading between choosing and clicking turns the click into a silent
+no-op); role disambiguation ("Search" picked the combobox over the button);
+**and the real ceiling - the typed path needs a SINGLE browser window.** With
+two, cua binds heuristically (title-only) and refuses every element read, so
+the tools report that honestly. Removing this ceiling means talking CDP
+directly instead of through cua's window binding; worth doing if multi-window
+browser control matters.
 
 ## Tier 2 — voice-native powers
 
