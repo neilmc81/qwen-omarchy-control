@@ -29,10 +29,13 @@ BarWidget {
     ? root.status + " — " + root.label
     : "Qwen voice: " + root.status
 
+  readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR")
+
   FileView {
     id: state
-    path: Quickshell.env("XDG_RUNTIME_DIR") + "/qwen-voice/state.json"
+    path: root.runtimeDir + "/qwen-voice/state.json"
     watchChanges: true
+    printErrors: false
     onFileChanged: reload()
     onLoaded: {
       try {
@@ -48,6 +51,21 @@ BarWidget {
       root.status = "stopped"
       root.label = ""
     }
+  }
+
+  // FileView cannot watch a file (or its parent directory) that does not exist
+  // when the shell starts: it reads once, fails, and never recovers, so the
+  // indicator stayed dark for the whole session. The state file only appears
+  // when the voice TUI first starts, which is usually after the shell. The
+  // runtime directory always exists, so watch it until the state file has been
+  // read (first the qwen-voice directory appears, then the file inside it),
+  // then disarm so the state view's own watch takes over.
+  FileView {
+    id: stateDirWatch
+    path: state.loaded ? "" : root.runtimeDir
+    watchChanges: true
+    printErrors: false
+    onFileChanged: state.reload()
   }
 
   implicitWidth: button.implicitWidth
