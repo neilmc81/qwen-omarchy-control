@@ -547,8 +547,20 @@ the false-block rate can be measured before enforcement is trusted.
 
 Config: `~/.config/qwen-omarchy-control/triage.json` (0600); see
 `share/triage.example.json`. Policy thresholds live in the config, not in the
-prompts. The API key is read from `OPENROUTER_API_KEY` or, read-only, from
-`~/.hermes/.env`; it is never written to the audit log.
+prompts. The key is resolved in this order: the env var named by `apiKeyEnv`,
+then the file named by `keyFile`, then `~/.hermes/.env`; it is never written to
+the audit log.
+
+The endpoint and model are config, not code, so the two Jev routes are
+interchangeable. This machine runs **TypeSafe direct**
+(`https://api.typesafe.ai/v1/systemone`, model pinned to `jev-1.13.0`, key in
+`~/.config/qwen-omarchy-control/typesafe.env`), which is canonical and uses
+TypeSafe's free monthly credits. OpenRouter
+(`https://openrouter.ai/api/alpha/decisions`, `typesafe/jev-1.13`) works
+identically at the protocol level and was measured to calibrate the same; use it
+by pointing `endpoint`/`model`/`apiKeyEnv` back at it. TypeSafe direct accepts
+only `jev-latest`/`jev-preview` aliases or a versioned ID like `jev-1.13.0` —
+not the `typesafe/...` spelling OpenRouter expects.
 
 ## Confidence and floors (plain English)
 
@@ -564,12 +576,25 @@ floor fails closed.
 | `minConfidence` | `triage.json` | **0.85** | whether a spoken sentence becomes an agent task |
 | `destructiveConfirm` | `triage.json` | 0.50 | hold a possibly-destructive agent request |
 
-**Calibrated 2026-09-21** (`typesafe/jev-1.13-20260917` via OpenRouter): on
-realistic candidate sets, *correctly chosen* elements scored **0.83–0.99**
-(mean 0.94); vague goals returned `none` at 0.64–0.76; absent targets returned
-`none` at ~1.0. So the 0.60 element floor sits below every correct choice and
-below the vague-`none` band — it acts when it should and holds when the goal is
-mushy.
+**Calibrated 2026-09-21** (TypeSafe direct, `jev-1.13.0`): the floor's job is
+to separate a real choice from "none". Measured across candidate sets of 3, 6
+and 10 elements:
+
+- *Correct* choices: **0.64–0.97** (mean 0.87).
+- *Rejected* (`none`) choices: **0.42–1.00** (mean 0.81).
+
+The ranges **overlap**, so no single floor perfectly separates them. What the
+floor can do is catch the low end: 3 of 12 rejections scored ≤0.61 ("do the
+stuff" 0.60/0.61, "whatever is important" 0.42/0.44) and those are exactly the
+mushy goals worth holding. The floor cannot catch a confidently-wrong "none"
+(an absent target scored 1.00) — nothing in a single model call can, which is
+why the caller must still distinguish `none` from a bad match and why the audit
+log, not the floor alone, is the real safety net.
+
+Note also that confidence scales with candidate count: TypeSafe derives it as
+`(N×peak − 1)/(N − 1)`, so a correct choice among 3 elements can score as low as
+~0.65 while the same certainty among 10 scores ~0.95. Do not read a small-set
+0.67 as a weak match.
 
 You do **not** need to re-measure on a schedule. The system fails *safe*: if the
 model drifts, the worst case is extra caution (more holds), not a silent wrong
