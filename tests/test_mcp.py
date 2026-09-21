@@ -263,7 +263,8 @@ class FrontendAllowlistTest(unittest.TestCase):
 
     def test_every_conversational_tool_is_enabled(self):
         # A tool the model is told to call must actually be reachable.
-        for name in ("find_element", "click_element", "describe_actions"):
+        for name in ("find_element", "click_element", "describe_actions",
+                     "do_gui_task"):
             self.assertIn(
                 name, self.enabled,
                 f"{name} is served but not enabled in frontend-mcp.json, so the "

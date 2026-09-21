@@ -185,8 +185,8 @@ backend involved), matching the level policy:
   `describe_actions`, `browser_read`
 - **Level 2 (careful):** `move_active_window_to_workspace`,
   `close_active_window`, `open_url`, `type_text`, `mouse_click`, `mouse_scroll`,
-  `click_element`, `browser_click`, `browser_type`, `browser_navigate`,
-  `browser_search`
+  `click_element`, `do_gui_task`, `browser_click`, `browser_type`,
+  `browser_navigate`, `browser_search`
 - **Confirmation gating:** `close_active_window`, `move_active_window_to_workspace`
   and `set_volume` do NOT run immediately — they return a pending action and the
   assistant asks you to confirm out loud before calling `confirm_pending`
@@ -359,6 +359,46 @@ unavailable, and the existing OCR tools remain the path
 (`~/.config/qwen-omarchy-control/vision.json`, see `share/vision.example.json`).
 Nothing here sits in the realtime voice loop; it is a tool the frontend may
 choose to call.
+
+## Goal-level GUI tasks (`do_gui_task`)
+
+For a short sequence in one window — "open the Downloads folder", "fill the name
+field and submit" — chaining `click_element` by hand is brittle: unverified
+multi-step work multiplies failure. `do_gui_task` runs the sequence as a bounded
+loop and reports honestly whether it got there.
+
+```
+observe the window -> build a menu of allowed actions
+   -> Jev picks one option (an id it was given)
+   -> code re-checks the target against live state, executes
+   -> code re-observes and checks what actually changed
+   -> repeat until done / stuck / out of budget
+```
+
+Rules it never breaks:
+
+- **Jev only chooses from the menu code built.** It cannot invent element ids,
+  coordinates, text or tools. Any literal text to type must be passed in
+  `inputs`; the model may only pick *which* supplied value.
+- **A score is not proof.** `done` is returned only after the caller's
+  `verification` criteria are observably satisfied — a step that changed nothing
+  cannot be "done".
+- **Freshness guard.** The chosen target is re-read immediately before the
+  action; a stale decision is discarded and re-planned, never replayed.
+- **Bounded and fail-closed.** A hard `max_actions` (default 8, cap 25), a
+  3-step no-change streak ends as `blocked`, and the panic flag is checked
+  before every step.
+- **Terminal states:** `done`, `blocked`, `needs_agent`. Never a false success.
+
+Arguments: `goal` (required), `window`, `inputs` (name→value to type),
+`verification` (statements that must hold), `constraints`, `max_actions`. The
+window must expose an accessibility tree; foot, Chrome and Electron do not, so
+`do_gui_task` returns `needs_agent` there and the browser/OCR tools remain the
+path. Each step costs one Jev round-trip and is throttled (the Nautilus GSK
+guard), so use it for a handful of steps, not a long task. The design is ported
+from two independent references that agreed on the same shape —
+[`shhivv/arc-cua`](https://github.com/shhivv/arc-cua) and Cua's own
+`cua-driver/examples/jev-use` — see ROADMAP → "#2. Goal-level actions".
 
 ## Typed browser control (exact, no OCR)
 

@@ -167,14 +167,74 @@ Also measured: the model calls `describe_actions` reliably only when the focused
 window is explicitly the subject. Naming the window ("what can I do in Files?")
 is a stronger trigger than the bare phrase.
 
-### 2. Goal-level actions — PARTLY DONE (2026-09-19)
-`browser_search(query)` is the first goal-level action: one call that internally
-navigates, types, submits and verifies, and reports which step failed rather
-than claiming success. It exists because the audit log could show the primitives
-work (browser_click/browser_type verified live), which is what the roadmap asked
-for before trusting a composition. The general `do_gui_task("save this file")`
-across arbitrary apps is still open — start it now that there is one working
-composition to generalise from, and extend the audit to cover it.
+### 2. Goal-level actions — DONE (2026-09-21)
+
+`browser_search(query)` was the first goal-level action. The general
+`do_gui_task(goal, ...)` across arbitrary apps is now built: `task.py` +
+the `do_gui_task` MCP tool. Verified live — the loop opened a folder in a real
+Nautilus window (see the binding note at the end).
+
+**The design, from two independent references** (arc-cua, and Cua's own
+`cua-driver/examples/jev-use`, which builds on the same cua-driver this project
+uses). Both converge on the same loop, so we port the *design*, not the code:
+
+```
+code observes the window  ->  builds a bounded candidate/action menu
+        ->  Jev picks exactly one option (an id it was given)
+        ->  code validates it against the current state, executes it
+        ->  code re-observes and checks what actually happened
+        ->  repeat until done / stuck / out of budget
+```
+
+Non-negotiables carried from the references and this project's own rules:
+
+- **Jev only chooses from options code built.** It never invents coordinates,
+  element ids, text, or tools. Literal text comes from the caller (`inputs`).
+- **A score is not proof the action worked.** Every step re-observes and
+  verifies; the model's confidence never substitutes for looking.
+- **Freshness guard.** A chosen target is re-checked immediately before the
+  action lands; if the UI moved underneath the decision, discard it and look
+  again rather than replaying a stale click.
+- **Bounded and fail-closed.** A hard `max_actions`; a repeated no-change streak
+  ends the run as `blocked`; the panic flag is checked between every step.
+- **Terminal states, reported honestly:** `done`, `blocked`, `needs_agent`.
+  `done` requires an observable change, not the model's say-so.
+- **Never inside the realtime voice loop.** It is a tool the frontend may call.
+
+**This machine's constraints (measured, from the existing primitives):**
+
+- Delivery is **ydotool/wtype**; cua-driver's own click is broken on Hyprland.
+- Native clicks only work where an **accessibility tree exists**. foot,
+  Electron, Chrome and SDL are `degraded` — for those `do_gui_task` returns
+  `needs_agent` and the caller keeps using the browser/OCR tools.
+- Steps are **throttled** (the Nautilus GSK crash guard) and each step is an
+  extra Jev round-trip, so this is for a handful of steps, not a long march.
+
+**Shipped as `vision.gui_task(...)` + the MCP tool `do_gui_task`**, reusing
+`resolve_window` / `candidates_from_tree` / `select` (choice), the fingerprint
+diff (`_verify_outcome`), `panic.guard`, and the trajectory audit. The action
+menu per step is built from what the tree actually offers:
+
+| Action | Requires | Note |
+| --- | --- | --- |
+| `click` | a labelled, enabled candidate | the default verb |
+| `double_click` | same | for open/activate |
+| `type_text` | an `input_key` the caller supplied | text is never invented |
+| `press_key` | a safe fixed key list | Enter/Escape/Tab/arrows |
+| `scroll` | direction | |
+| `done` | — | only accepted if the step verifies |
+
+**Measured lesson (live, 2026-09-21): bind the window once.** The first
+implementation re-resolved the target by its title on every step. It worked until
+the task changed the window: opening a folder retitles it (`guitask-demo` ->
+`alpha`), so the second observe failed with "no window matches" *after* the click
+had already succeeded. The loop now resolves the window once and binds its
+pid/window_id for the whole task — window *identity* persists, title does not.
+A regression test (`VisionBackendBindingTest`) pins this.
+
+Offered actions the model may pick from are exactly those the live tree
+supports; anything else is rejected before delivery, and a "done" that changed
+nothing is downgraded to `needs_agent` rather than reported as success.
 
 ### 3. Spoken outcome
 "Did it work?" → Jev reads the post-action tree and answers in one sentence.
@@ -255,8 +315,10 @@ Feed successes and failures back into better element descriptions for Jev
 1. ~~Verify-then-retry (#1)~~ and ~~panic stop (#10)~~ — **done**.
 2. ~~Trajectory audit (#14)~~, ~~"What can I do here?" (#4)~~, ~~Jev-verified
    outcome (#1b)~~, ~~mid-sequence freeze (#10 remainder)~~ — **done**.
-3. **Goal-level actions (#2)** — one `do_gui_task` tool. The audit log now
-   provides the reliability data this needs before it is built.
+3. ~~Goal-level actions (#2)~~ — **DONE**: one bounded, verified `do_gui_task`
+   tool (`task.py`). Built from the arc-cua + Cua `jev-use` design. Live-tested
+   against Nautilus; a real window re-resolve bug was found and fixed (bind the
+   window once, not per step).
 4. ~~Typed browser (#11)~~ — **DONE**, with a correction: the earlier "parked"
    verdict was wrong. The existing-profile route does work, via a daemon
    startup grant plus a DevTools port on Chrome, and it drives the real

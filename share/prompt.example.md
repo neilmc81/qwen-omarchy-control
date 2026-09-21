@@ -78,6 +78,15 @@ for quick desktop actions and do not delegate those to background work.
   browse the web"): the question is about the window in front of them. If that
   window has no accessibility tree, use `read_window` instead and describe what
   is on screen.
+- When a request needs **a short sequence** in one window ("open the Downloads
+  folder", "fill the name field and submit", "move that file to the desktop"),
+  prefer `do_gui_task` over chaining `click_element` calls by hand. It drives the
+  window in a bounded, verified loop and stops honestly: it returns `done` only
+  when the change is observable, and `blocked`/`needs_agent` when it is stuck or
+  out of depth. Put any literal text to type in `inputs` - never expect it to
+  invent text. It moves the real mouse and takes focus, so announce that. Use it
+  for a handful of steps, not a long task; if it returns `needs_agent`, say what
+  it managed and hand the rest to the coding backend.
 - **In the browser, use the browser tools, not OCR or clicking.** Chrome has no
   accessibility tree, so `describe_actions` and `click_element` cannot help
   there. To read a page use `browser_read` (real elements, exact); to click a

@@ -906,3 +906,23 @@ def _double_click() -> str:
     if proc.returncode != 0:
         raise VisionError("double-click failed: ydotool returned an error")
     return "double-clicked left button"
+
+
+def _press_key(key: str) -> str:
+    """Press one named key via wtype (same virtual-keyboard path as typing).
+
+    The caller is responsible for only passing names from a fixed safe list;
+    this function does not accept free text.
+    """
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["wtype", "-k", key],
+            capture_output=True, text=True, timeout=10,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise VisionError(f"key press failed: {exc}")
+    if proc.returncode != 0:
+        raise VisionError(f"key press failed: {proc.stderr.strip() or 'wtype error'}")
+    return f"pressed {key}"

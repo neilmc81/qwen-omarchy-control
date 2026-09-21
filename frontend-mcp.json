@@ -117,6 +117,10 @@
           "enabled": true,
           "description": "Find a UI element by name and click it via the accessibility tree. Moves the real mouse and takes focus for a moment - announce this to the user first. double=true opens an item."
         },
+        "do_gui_task": {
+          "enabled": true,
+          "description": "Run a short, bounded, verified GUI task in one window when simple primitives are not enough (e.g. 'open the Downloads folder', 'fill the name field and submit'). Each step is chosen from options built from the window's live state, acted on, then re-read to confirm what changed. Literal text must be passed in `inputs`; never invented. Returns status done/blocked/needs_agent and never a false success. Use for a handful of steps, not a long march."
+        },
         "pointer_move": {
           "enabled": true,
           "description": "Move the mouse pointer (absolute x,y, or a delta with relative=true)."

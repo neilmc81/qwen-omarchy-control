@@ -79,6 +79,7 @@ def classify(operation: str) -> str:
         "mouse_click",
         "mouse_scroll",
         "click_element",
+        "do_gui_task",
         "browser_click",
         "browser_type",
         "browser_navigate",

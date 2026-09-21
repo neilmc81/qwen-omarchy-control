@@ -15,7 +15,7 @@ import sys
 import traceback
 import uuid
 
-from . import browser, panic, triage, vision
+from . import browser, panic, task, triage, vision
 from .desktop import DesktopController, DesktopError
 from .policy import PolicyError, reject_sensitive_text
 PROTOCOL_VERSION = "2025-06-18"
@@ -335,6 +335,45 @@ TOOLS = [
         },
     },
     {
+        "name": "do_gui_task",
+        "description": "Run a short, bounded, verified GUI task in one window when "
+                       "simple primitives are not enough: e.g. 'open the Downloads "
+                       "folder', 'fill the name field and submit'. Each step is "
+                       "chosen from options built from the window's live state, "
+                       "acted on, then re-read to confirm what changed; it stops on "
+                       "completion, when stuck, or at an action budget. Literal text "
+                       "must be passed in `inputs` and can never be invented. Fails "
+                       "soft: returns status 'needs_agent'/'blocked' (never a false "
+                       "success) and falls back to browser/OCR tools when the window "
+                       "has no accessibility tree (foot, Chrome, Electron). Use for "
+                       "a handful of steps, not a long march. Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string",
+                         "description": "What to accomplish in the window, e.g. "
+                                        "'open the Documents folder'."},
+                "window": {"type": "string",
+                           "description": "Target window: a pid, or a title/app-name "
+                                          "substring. Omit for the focused window."},
+                "inputs": {"type": "object",
+                           "description": "Literal values the task may type, keyed by "
+                                          "name (e.g. {\"name\": \"Neil\"}). The task "
+                                          "may only type these; it cannot invent text.",
+                           "additionalProperties": {"type": "string"}},
+                "verification": {"type": "array", "items": {"type": "string"},
+                                 "description": "Short statements that must be true "
+                                                "for the task to count as done."},
+                "constraints": {"type": "array", "items": {"type": "string"},
+                                "description": "Things the task must not do."},
+                "max_actions": {"type": "integer", "minimum": 1, "maximum": 25,
+                                "description": "Hard cap on steps (default 8)."},
+            },
+            "required": ["goal"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "browser_read",
         "description": "Read the current browser page as real DOM elements (role, "
                        "name, clickable) instead of OCR. Use this whenever the "
@@ -596,6 +635,25 @@ class McpHandler:
         if name == "describe_actions":
             return vision.describe_actions(
                 str(args["window"]) if args.get("window") else None,
+            )
+        if name == "do_gui_task":
+            inputs = args.get("inputs") or {}
+            if not isinstance(inputs, dict):
+                raise PolicyError("do_gui_task inputs must be an object")
+            for value in inputs.values():
+                if reject_sensitive_text(str(value)):
+                    raise PolicyError(
+                        "refused: an input value looks sensitive "
+                        "(password/secret/card). The voice assistant never types "
+                        "into sensitive fields."
+                    )
+            return task.gui_task_safe(
+                str(args["goal"]),
+                window=str(args["window"]) if args.get("window") else None,
+                inputs={str(k): str(v) for k, v in inputs.items()},
+                verification=[str(v) for v in (args.get("verification") or [])],
+                constraints=[str(v) for v in (args.get("constraints") or [])],
+                max_actions=int(args["max_actions"]) if args.get("max_actions") else None,
             )
         if name == "browser_read":
             return browser.browser_read(
