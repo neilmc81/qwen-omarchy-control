@@ -28,7 +28,6 @@ qwen-audio-agent (Realtime, DashScope Qwen Audio 3.0 Realtime Flash)
 | Desktop controller | structured, allowlisted operations | `~/.local/share/qwen-omarchy-control/` |
 | MCP server | stdio JSON-RPC exposing the controller to the voice frontend | `bin/desktop-mcp` |
 | Voice frontend model | `qwen-audio-3.0-realtime-flash` via DashScope | `~/.config/qwaudio/config.env` |
-| Coordinator | persistent desktop-action executor (Unix socket) | `omarchy-voice-coordinator.service` |
 | Bar widgets | mic state + cost | `~/.config/omarchy/plugins/{qwen.voice,qwen.cost}` |
 
 > **Design note.** The voice loop is deliberately left to Qwen's own code. An

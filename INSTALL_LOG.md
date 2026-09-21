@@ -64,7 +64,7 @@ All tests pass; the MCP wire was verified against the real
 also from a bare environment without Wayland/Hyprland env, proving the gateway
 service can drive the desktop controller.
 
-## Old system removal
+## Old system removal (2026-09-13)
 
 The previous `omarchy-voice` integration was backed up to
 `~/.local/share/qwen-omarchy-control-backups/old-system-20260913-180519`:
@@ -75,6 +75,18 @@ The previous `omarchy-voice` integration was backed up to
 - `~/.local/share/omarchy-voice/` project -> backup
 - `SUPER+SHIFT+V` re-bound from `omarchy-voice command toggle` to the new
   Qwen voice toggle script.
+
+## Remaining omarchy-voice artifacts removed (2026-09-21)
+
+The last survivors of the old staged-release generation were confirmed dead
+(no live references) and deleted:
+- `~/.local/share/omarchy-voice/` (staged release `release-766a8eabc151fffe`)
+- `~/.local/state/omarchy-voice/` (coordinator.sqlite3, release/install
+  manifests, overlay + rollback backups)
+- `~/.config/systemd/user/omarchy-voice-coordinator.service` (disabled/inactive)
+- `~/.config/omarchy-voice/` (only `config.env.example`; live config lives in
+  `~/.config/qwaudio/config.env`)
+- `~/.config/pipewire/pipewire.conf.d/echo-cancel.conf` (old barge-in tuning)
 
 ## Hyprland binding
 
