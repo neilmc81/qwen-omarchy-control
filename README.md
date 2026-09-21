@@ -534,6 +534,12 @@ desktop-control triage set enforce     # only once the numbers look right
 desktop-control triage set off
 ```
 
+> **Currently in `log` mode (since 2026-09-21).** After the voice agent has
+> handled a few dozen real `launch_agent` requests, run `triage stats` and
+> `triage review -v` before deciding on `enforce`. See ROADMAP → "TODO — review
+> the triage log before enforcing". `log` mode records only its would-be
+> verdict, not actual damage.
+
 `enforce` fails closed: no key, network error, timeout or malformed answer holds
 the request for confirmation rather than allowing it. Every decision is appended
 to `~/.local/state/qwen-omarchy-control/triage.jsonl` (0600, secrets masked) so
@@ -543,6 +549,49 @@ Config: `~/.config/qwen-omarchy-control/triage.json` (0600); see
 `share/triage.example.json`. Policy thresholds live in the config, not in the
 prompts. The API key is read from `OPENROUTER_API_KEY` or, read-only, from
 `~/.hermes/.env`; it is never written to the audit log.
+
+## Confidence and floors (plain English)
+
+Jev returns a *confidence* for each choice ("I'm 78% sure it's the Save
+button"). A *floor* is the minimum confidence **your code** will act on. The
+model sets the confidence; you set the floor. Below the floor the code does not
+guess — it holds, falls back to OCR, or surfaces a clear "cannot tell". Every
+floor fails closed.
+
+| Floor | Where | Default | Guards |
+| --- | --- | --- | --- |
+| `minConfidence` | `vision.json` / `browser.json` (`selection.py`) | **0.60** | which element to click |
+| `minConfidence` | `triage.json` | **0.85** | whether a spoken sentence becomes an agent task |
+| `destructiveConfirm` | `triage.json` | 0.50 | hold a possibly-destructive agent request |
+
+**Calibrated 2026-09-21** (`typesafe/jev-1.13-20260917` via OpenRouter): on
+realistic candidate sets, *correctly chosen* elements scored **0.83–0.99**
+(mean 0.94); vague goals returned `none` at 0.64–0.76; absent targets returned
+`none` at ~1.0. So the 0.60 element floor sits below every correct choice and
+below the vague-`none` band — it acts when it should and holds when the goal is
+mushy.
+
+You do **not** need to re-measure on a schedule. The system fails *safe*: if the
+model drifts, the worst case is extra caution (more holds), not a silent wrong
+click. Touch a floor only when a log shows a problem:
+
+- Too many holds/nags → lower the relevant floor slightly.
+- A wrong action → raise it.
+
+Two logs make that a data question, not a guess:
+
+- `~/.local/state/qwen-omarchy-control/trajectory.jsonl` — each GUI action with
+  `selection` (`jev`/`fallback`) and `confidence`, so a low-confidence miss is
+  visible after the fact.
+- `~/.local/state/qwen-omarchy-control/triage.jsonl` — each agent-gate decision.
+  Every record now also carries `resolved_model` (the exact build the provider
+  served), so a silent model swap shows up as a changed field even though the
+  requested model is pinned.
+
+**Why pinned, not `~...latest`:** the endpoint accepts `~typesafe/jev-latest`
+(auto-tracks the newest build), but this project pins `typesafe/jev-1.13` on
+purpose — newer is not automatically better for a system whose floors were
+measured against a known build. Upgrade deliberately, then re-measure.
 
 ## Safety policy
 

@@ -83,7 +83,12 @@ def record(action: dict) -> dict | None:
 
 
 def log_click(result: dict, tool: str = "click_element") -> dict | None:
-    """Record a `vision.click_element` result in the standard shape."""
+    """Record a `vision.click_element` result in the standard shape.
+
+    `confidence` and `selection` come from the element chooser (`find_element`
+    returns them) and are what make the log calibratable: without them there is
+    no way to ask "was the floor too low for the calls that failed?".
+    """
     return record({
         "tool": tool,
         "app": result.get("window_class") or result.get("window_title"),
@@ -97,6 +102,8 @@ def log_click(result: dict, tool: str = "click_element") -> dict | None:
         "cost_usd": result.get("cost_usd"),
         "double": result.get("double"),
         "takeover": result.get("takeover"),
+        "selection": result.get("selection") or ("jev" if result.get("confidence") is not None else None),
+        "confidence": result.get("confidence"),
     })
 
 

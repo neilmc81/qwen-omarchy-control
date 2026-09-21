@@ -364,8 +364,13 @@ def evaluate(prompt: str, context: str = "") -> Verdict:
     prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
     started = time.monotonic()
 
+    resolved_model = ""
     try:
         payload = ask(state, _questions(), cfg)
+        # The provider reports the exact build it served (e.g.
+        # "typesafe/jev-1.13-20260917"). Recorded so a silent model change is
+        # visible in the log instead of only inferable from a shift in answers.
+        resolved_model = str(payload.get("model") or "")
         verdict, reason, details = decide(payload.get("answers") or {}, cfg)
         used_fallback = False
         usage = payload.get("usage") or {}
@@ -390,6 +395,7 @@ def evaluate(prompt: str, context: str = "") -> Verdict:
         "cost_usd": cost,
         "latency_s": round(latency, 3),
         "model": cfg.get("model") or DEFAULT_MODEL,
+        "resolved_model": resolved_model,
         **details,
     }
     if cfg.get("logPrompt"):

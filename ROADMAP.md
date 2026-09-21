@@ -12,6 +12,33 @@ Current state when this was written (2026-09-19):
   measure). See README → "Pre-dispatch agent triage".
 - Both are off the realtime voice loop; neither adds speech latency.
 
+## TODO — review the triage log before enforcing
+
+`triage` is now **in `log` mode** (since 2026-09-21). It evaluates every
+`launch_agent` request but always allows, recording what it *would* have done.
+
+**Do this after the voice agent has handled a few dozen real agent requests:**
+
+```bash
+desktop-control triage stats       # raw verdict counts + fallback rate
+desktop-control triage review -v   # recent decisions with the prompts
+```
+
+Then decide:
+
+- **Low `confirm` rate on requests I meant** and **fallback rate ~0** →
+  `desktop-control triage set enforce`.
+- **Frequent `confirm` on normal work** → tune thresholds in
+  `~/.config/qwen-omarchy-control/triage.json` (policy lives there, not in the
+  prompts) and keep measuring.
+
+Log: `~/.local/state/qwen-omarchy-control/triage.jsonl` (0600, secrets masked).
+Key resolves read-only from `~/.hermes/.env`; if that breaks, `enforce` fails
+closed and holds *every* agent request, so re-check before enforcing.
+
+Reminder: `log` mode does **not** record actual damage — it only records its own
+would-be verdict. It measures false alarms, not missed danger.
+
 ## Verified available from cua-driver but not yet used
 
 Checked live on this machine, not from docs:
