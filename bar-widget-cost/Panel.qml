@@ -43,13 +43,27 @@ Panel {
     { keys: "SUPER+SHIFT+ESC",   what: "Freeze agent input" }
   ]
 
-  // Voice capabilities added alongside the computer-use work. Phrased as what
-  // to SAY, because that is the affordance the user actually has.
+  // Voice capabilities. Phrased as what to SAY, because that is the affordance
+  // the user actually has. Quick single actions first, then the chore-level
+  // powers (multi-step, macros, watching). Keep every line short: the panel is
+  // narrow and a truncated hint helps nobody.
   readonly property var helperTips: [
     { say: "\u201cwhat can I do here?\u201d", what: "Name the window's main actions" },
-    { say: "\u201csearch for \u2026\u201d", what: "Looks it up in the browser" },
     { say: "\u201cclick the Save button\u201d", what: "Precise, verified click" },
+    { say: "\u201copen the Downloads folder\u201d", what: "Short verified GUI task" },
+    { say: "\u201cdid it work?\u201d", what: "Checks and speaks the outcome" },
+    { say: "\u201csearch for \u2026\u201d", what: "Looks it up in the browser" },
     { say: "\u201cstop\u201d / \u201cnever mind\u201d", what: "Interrupt it mid-task" }
+  ]
+
+  // Chore-level powers. These run several steps or run later, so they are the
+  // ones worth reminding yourself about.
+  readonly property var helperChores: [
+    { say: "\u201c\u2026, then \u2026, then \u2026\u201d", what: "Several steps in one breath" },
+    { say: "\u201copen X, make a folder Y, and move Z there\u201d", what: "One ordered sequence, stops at the step that fails" },
+    { say: "\u201cwatch me do this once\u201d", what: "Records the steps as a named macro" },
+    { say: "\u201cdo my monthly report\u201d", what: "Replays a saved macro by name" },
+    { say: "\u201ctell me when the export finishes\u201d", what: "Watches a window, speaks when done" }
   ]
 
   function money(value) {
@@ -272,6 +286,51 @@ Panel {
 
           Repeater {
             model: root.helperTips
+            delegate: Column {
+              width: col.width
+              spacing: 0
+              Text {
+                width: col.width
+                text: modelData.say
+                wrapMode: Text.WordWrap
+                font.family: root.fontFamily
+                font.pixelSize: 10
+                color: root.accent
+              }
+              Text {
+                width: col.width
+                text: modelData.what
+                wrapMode: Text.WordWrap
+                font.family: root.fontFamily
+                font.pixelSize: 9
+                color: root.dim
+              }
+            }
+          }
+        }
+
+        // Chore-level powers: multi-step, macros, watching. These are the ones
+        // easy to forget, so they get their own heading.
+        Rectangle {
+          width: col.width
+          height: 1
+          color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.10)
+        }
+
+        Text {
+          text: "Chores"
+          font.family: root.fontFamily
+          font.pixelSize: 11
+          font.bold: true
+          color: root.fg
+        }
+
+        Column {
+          width: col.width
+          spacing: 6
+
+          Repeater {
+            model: root.helperChores
             delegate: Column {
               width: col.width
               spacing: 0
