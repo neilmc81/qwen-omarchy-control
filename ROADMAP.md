@@ -60,6 +60,29 @@ Checked live on this machine, not from docs:
 
 ## Done
 
+### Phase 9 — MarketOS voice interface — DONE (2026-09-21)
+A second frontend MCP server, `marketos`, exposes 11 read-only tools over the
+MarketOS loopback API (`market_status`, `market_brief`, `market_next_event`,
+`market_calendar`, `market_macro`, `market_technical`, `market_latest_events`,
+`market_latest_analysis`, `market_event_analysis`, `market_usage`,
+`open_marketos`). The server lives in the MarketOS repo
+(`core/interfaces/mcp/`, launcher `omarchy/marketos-mcp`); this project only
+registers it and routes to it.
+
+- Qwen is ears + routing + presentation; MarketOS is the market brain. Tools
+  return a `spoken` string and a `stale` flag so the model cannot invent or
+  recompute a market fact.
+- Read-only: no admin/config/threshold/model-policy tool, no shell/file/URL.
+- No extra model call on a market question: `market_brief` reuses stored
+  analysis; only `open_marketos` touches the desktop (focus, never duplicate).
+- Routing stays separated: market → `mcp__marketos__*`, "move MarketOS to
+  workspace 3" → desktop controller, "use OpenCode to ..." → `launch_agent`.
+- `tests/test_marketos_surface.py` pins all three surfaces (server, allowlist,
+  routing prompt) including a real stdio handshake and the 16k prompt cap.
+- Measured live tool latency: 5-435 ms per read tool (in-process), well within a
+  voice turn. A dead MarketOS, Jev or analyst layer degrades to a spoken error
+  without disturbing the normal desktop tools.
+
 ### 1. Verify-then-retry — DONE (2026-09-19)
 `click_element` re-reads the window after a click and reports `verified` /
 `verification` / `verification_reason`. Two things came out of building it:
@@ -255,24 +278,69 @@ browser control matters.
 
 ## Tier 2 — voice-native powers
 
+**Design rule for all of Tier 2: stay voice-agent agnostic.** Everything ships
+as an MCP tool that returns *structured facts* (a sentence, a status, a job id),
+never as voice-agent-specific behaviour. Speech, wake word, mic state and
+billing are the only Qwen-shaped parts of this project; Tier 2 must not add any
+more of them. That way swapping the voice frontend (Qwen -> Google Live, etc.)
+keeps every one of these powers. Concretely:
+
+- A spoken answer is returned as a `spoken` **string field** the frontend reads
+  aloud. The tool never calls TTS, `notify-send`, or any audio device.
+- Background work (watch, replay) returns a **job id** and writes a pollable
+  state file. "Tell me when it's done" is the frontend polling `check_job`; a
+  notification is an optional courtesy, not the mechanism.
+- No new tool may depend on the Qwen gateway, the TUI, tmux, or DashScope.
+
 ### 4. "What can I do here?"
-Read the focused window's elements, Jev summarizes the 3–5 meaningful actions
-aloud. Turns "hunt for the button" into "what are my options".
+DONE (2026-09-19) — `describe_actions`, read-only, Jev-ranked. See Tier 1.
 
-### 5. Record once, replay by name
-"Watch me do this once" → `start_recording`; later "do my monthly report" →
-`replay_trajectory`. A macro system for desktop chores with no scripting.
+### 5. Record once, replay by name — DONE (2026-09-21)
+"Watch me do this once" → record; later "do my monthly report" → replay.
 
-### 6. Multi-step in one breath
+**Key decision: record at *our* boundary, not cua-driver's.** cua-driver has
+`start_recording`/`replay_trajectory`, but they capture *cua* tool calls, and
+this project delivers input with ydotool/wtype (measured: cua's click is broken
+on Hyprland). A cua recording would therefore replay the wrong mechanism. So the
+macro records the same action vocabulary `do_gui_task` already emits, at the
+`Backend.execute` boundary:
+
+1. `macro_record(action="start", name=...)` begins capturing each step's
+   (window identity, action, target role+label, value, key, direction) into
+   `~/.local/state/qwen-omarchy-control/macros/<name>.json` (0600).
+2. Steps are recorded as the *semantic* intent ("click the Save button"), not
+   raw coordinates, so a replay re-targets live elements and survives a moved
+   button. Where the element is gone, replay reports the exact step it failed at.
+3. `macro_replay(name=...)` re-runs the steps through the same verified loop
+   (`gui_task` per step, or one continuous loop), stopping honestly on mismatch.
+4. Macros are named, listed (`macro_list`) and deletable (`macro_delete`).
+
+Replay is **verified like everything else**: it does not claim success because it
+re-sent the keys, only if the observable state changed as the recording showed.
+
+### 6. Multi-step in one breath — DONE (2026-09-21)
 "Open Documents, make a folder called Taxes, and move the newest PDF there."
-Each step is a bounded Jev choice; code sequences them with verification between
-steps. Do NOT start this until #1 is solid — unverified multi-step just
-multiplies failure.
 
-### 7. Watch-and-narrate
-"Watch that window and tell me when the export finishes." Poll the tree for a
-condition and speak when it flips. Extends the existing terminal watching to
-GUIs.
+`do_sequence(steps=[...], window=...)` runs an ordered list of bounded
+`gui_task` steps, each with its own goal + verification, and **stops at the
+first step that cannot be verified** rather than pressing on. It returns the
+per-step results and a `spoken` summary. This is the composition #2 was a
+prerequisite for: unverified multi-step multiplies failure, so the sequence is
+only as strong as each verified step, and it fails at a named step.
+
+### 7. Watch-and-narrate — DONE (2026-09-21)
+"Watch that window and tell me when the export finishes."
+
+`watch_start(window, condition, ...)` polls the window's accessibility tree on a
+short interval and evaluates a Jev `noul` question ("is the export finished?")
+against it, exactly like #1b. When the reading crosses the threshold it writes
+the result to a **pollable job state** and (courtesy) fires one notification.
+`watch_check(job_id)` returns the current status; `watch_stop(job_id)` ends it.
+It is read-only (never clicks), bounded by a timeout and an interval floor, and
+honours the panic flag. Terminal states mirror `do_gui_task`: `met`, `timeout`,
+`stopped`, `unknown`.
+
+
 
 ## Tier 3 — more ambitious
 
@@ -323,9 +391,9 @@ Feed successes and failures back into better element descriptions for Jev
    verdict was wrong. The existing-profile route does work, via a daemon
    startup grant plus a DevTools port on Chrome, and it drives the real
    logged-in profile. See README → "Typed browser control".
-5. **Record/replay (#5)** — the one nobody expects from a voice assistant.
+5. ~~Record/replay (#5)~~, ~~multi-step (#6)~~, ~~watch-and-narrate (#7)~~ — **DONE (2026-09-21)**, as `macro_*`, `do_sequence` and `watch_*`. All voice-agent agnostic (structured `spoken` + pollable jobs).
 
-Skip #6/#7/#13 until #2 is solid.
+Remaining: Tier 3 (#8 undo, #9 plan-and-approve, #12 form-fill, #13 cross-app transfer) and Tier 4 (#15 failure memory, #16 self-improvement).
 
 ## Nautilus crashes during testing — investigated 2026-09-19
 

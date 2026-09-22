@@ -67,6 +67,10 @@ def classify(operation: str) -> str:
         "pointer_move",
         "find_element",
         "describe_actions",
+        "describe_outcome",
+        "watch_start",
+        "watch_check",
+        "watch_stop",
         "browser_read",
     }:
         return "level1"
@@ -80,6 +84,9 @@ def classify(operation: str) -> str:
         "mouse_scroll",
         "click_element",
         "do_gui_task",
+        "do_sequence",
+        "macro_record",
+        "macro_replay",
         "browser_click",
         "browser_type",
         "browser_navigate",

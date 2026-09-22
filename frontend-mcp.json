@@ -93,6 +93,10 @@
           "enabled": true,
           "description": "Answer 'what can I do here?' for a window: read its accessibility tree and name the 3-5 meaningful actions (open, save, send, delete, navigate), best first. Read-only, no click. Use when the user asks what they can do in the current window, or what is on screen, or to orient before clicking."
         },
+        "describe_outcome": {
+          "enabled": true,
+          "description": "Answer \"did it work?\" about a GUI action: read the window and judge whether the goal is now satisfied; returns a `spoken` sentence to read aloud. Read-only, never clicks."
+        },
         "browser_read": {
           "enabled": true,
           "description": "Read the current browser page as real DOM elements (role, name, clickable) instead of OCR. Exact where read_screen guesses. Read-only, no mouse movement. Use whenever the browser is the window in question; optional goal narrows it (e.g. 'the search box')."
@@ -120,6 +124,18 @@
         "do_gui_task": {
           "enabled": true,
           "description": "Run a short, bounded, verified GUI task in one window when simple primitives are not enough (e.g. 'open the Downloads folder', 'fill the name field and submit'). Each step is chosen from options built from the window's live state, acted on, then re-read to confirm what changed. Literal text must be passed in `inputs`; never invented. Returns status done/blocked/needs_agent and never a false success. Use for a handful of steps, not a long march."
+        },
+        "do_sequence": {
+          "enabled": true,
+          "description": "Run several GUI steps in order in one request, stopping at the first step that cannot be verified and naming it. Returns per-step results and a `spoken` summary."
+        },
+        "macro_record": {
+          "enabled": true,
+          "description": "Record a desktop chore once so it can be replayed by name. action=start/stop/list/delete."
+        },
+        "macro_replay": {
+          "enabled": true,
+          "description": "Replay a saved macro by name: re-runs its recorded steps, re-targets live elements, verifies each step, and stops honestly at the failing step. Returns a `spoken` summary."
         },
         "pointer_move": {
           "enabled": true,
@@ -156,6 +172,18 @@
         "cancel_pending": {
           "enabled": true,
           "description": "Discard the action that is waiting for confirmation."
+        },
+        "watch_start": {
+          "enabled": true,
+          "description": "Watch a window and report when a condition becomes true. Read-only. Returns a job_id to poll with watch_check."
+        },
+        "watch_check": {
+          "enabled": true,
+          "description": "Check a watch job: status running/met/timeout/stopped plus a `spoken` sentence when done."
+        },
+        "watch_stop": {
+          "enabled": true,
+          "description": "Stop a watch job."
         }
       }
     }

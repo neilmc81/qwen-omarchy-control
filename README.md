@@ -182,11 +182,12 @@ backend involved), matching the level policy:
   `launch_app`, `set_volume`, `volume_up`, `volume_down`, `mute_audio`,
   `unmute_audio`, `get_audio_status`, `get_system_status`,
   `read_window`, `read_screen`, `pointer_move`, `find_element`,
-  `describe_actions`, `browser_read`
+  `describe_actions`, `describe_outcome`, `watch_start`, `watch_check`,
+  `watch_stop`, `browser_read`
 - **Level 2 (careful):** `move_active_window_to_workspace`,
   `close_active_window`, `open_url`, `type_text`, `mouse_click`, `mouse_scroll`,
-  `click_element`, `do_gui_task`, `browser_click`, `browser_type`,
-  `browser_navigate`, `browser_search`
+  `click_element`, `do_gui_task`, `do_sequence`, `macro_record`, `macro_replay`,
+  `browser_click`, `browser_type`, `browser_navigate`, `browser_search`
 - **Confirmation gating:** `close_active_window`, `move_active_window_to_workspace`
   and `set_volume` do NOT run immediately — they return a pending action and the
   assistant asks you to confirm out loud before calling `confirm_pending`
@@ -232,6 +233,40 @@ profile and has real authority. `ASSISTANT.md` keeps persona and style only.
 `PROMPT.md` is re-read from disk on every realtime `buildSession` (no caching),
 and the session reconnects every few minutes, so an edit takes effect without a
 gateway restart.
+
+### MarketOS (a second MCP server)
+
+A second server, `marketos`, is registered the same way. It is a **separate
+project** (`/home/neil/Projects/MarketOS`) whose stdio MCP server
+(`omarchy/marketos-mcp`) talks only to the MarketOS loopback HTTP API; it does
+not live in this repository and has its own tests. MarketOS is the market
+data/decision/analysis system; this project owns only the voice front end.
+
+The three surfaces for MarketOS tools:
+
+1. **The MCP server** — `core/interfaces/mcp/server.py` in the MarketOS repo,
+   launched by `omarchy/marketos-mcp`. Stdlib only; read-only.
+2. **The frontend allowlist** — the `marketos` entry in `frontend-mcp.json`
+   (11 tools).
+3. **The routing rules** — the `# MarketOS` section of
+   `~/.config/qwaudio/frontend-agent/PROMPT.md` (tracked in
+   `share/prompt.example.md`).
+
+`tests/test_marketos_surface.py` pins all three surfaces together, including a
+real stdio handshake against the installed launcher. Use this pattern whenever a
+second server is added: a tool is not shipped until the server, the allowlist
+and the routing prompt agree, and a mismatch must fail a test loudly.
+
+Routing separation is deliberate and tested: a market question goes to
+`mcp__marketos__*`; a desktop action ("move MarketOS to workspace 3") goes to the
+desktop controller; a coding/build request goes to `launch_agent`. MarketOS
+tools are read-only and never let Qwen compute a market fact — they return a
+`spoken` string and a `stale` flag, and the assistant presents them.
+
+**A changed prompt or tool needs a fresh session, not just a gateway restart.**
+A long-lived realtime session anchors on its own conversation history; restart
+the TUI (kill the `qwen-voice` tmux session and press the hotkey) before judging
+new routing.
 
 Level 3 operations (file deletion, package removal, sudo, shutdown, killing
 processes, sending messages, entering passwords, arbitrary shell) are **not**
@@ -399,6 +434,39 @@ guard), so use it for a handful of steps, not a long task. The design is ported
 from two independent references that agreed on the same shape —
 [`shhivv/arc-cua`](https://github.com/shhivv/arc-cua) and Cua's own
 `cua-driver/examples/jev-use` — see ROADMAP → "#2. Goal-level actions".
+
+## Voice-native powers (Tier 2)
+
+These build on `do_gui_task` and are deliberately **voice-agent agnostic**: each
+returns structured facts and, where a sentence is wanted, a `spoken` string the
+frontend reads aloud. None of them calls TTS, notifications, or the Qwen
+gateway; background work is pollable state, not a blocking call. So swapping the
+voice frontend keeps all of them.
+
+- **`describe_outcome`** ("did it work?") — reads the window and judges whether
+  the goal is now satisfied, returning a short `spoken` sentence. Read-only.
+  Code composes the sentence from Jev's typed answer, so wording is stable.
+- **`do_sequence`** (multi-step in one breath) — runs ordered steps, each a
+  verified `do_gui_task`, and **stops at the first step it cannot verify**,
+  naming it in the `spoken` summary. Use it instead of chaining tasks yourself.
+- **`macro_record` / `macro_replay`** (record once, replay by name) — records the
+  *semantic* steps of a `do_gui_task` run (window, action, target role+label,
+  value, key) to `~/.local/state/qwen-omarchy-control/macros/<name>.json`, then
+  replays them deterministically, re-targeting live elements and verifying each
+  step. Recording intent rather than coordinates means a macro survives a moved
+  button; a missing target is reported as the exact failing step. `macro_record`
+  also does `list` and `delete`.
+- **`watch_start` / `watch_check` / `watch_stop`** (watch-and-narrate) — polls a
+  window's tree and asks Jev one yes/no question ("is the export finished?")
+  until it crosses a threshold. Read-only, never clicks, honours the freeze. It
+  runs as a **pollable job** (`jobs.py`, `$XDG_STATE_HOME/qwen-omarchy-control/
+  jobs/<id>.json`): the frontend polls `watch_check`; a notification is only a
+  courtesy. Terminal states are `met`/`timeout`/`stopped`/`failed`.
+
+Why record at our boundary rather than cua-driver's `start_recording`: cua
+records *cua* tool calls, but this project delivers input with ydotool/wtype, so
+a cua recording would replay the wrong mechanism. The macro records the same
+vocabulary `gui_task` already emits.
 
 ## Typed browser control (exact, no OCR)
 

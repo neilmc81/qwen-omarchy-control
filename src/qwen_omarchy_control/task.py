@@ -516,7 +516,15 @@ def gui_task(goal: str, window: str | None = None,
                     value=value, key=key, direction=direction, confidence=confidence,
                     changed=changed, verified=verified, reason=reason, cost_usd=cost)
         history.append(step)
-        _audit(goal, action, step, observation)
+        if cfg.get("audit", True):
+            _audit(goal, action, step, observation)
+
+        # If a macro is being recorded, capture the semantic step. Imported here
+        # so the module has no hard dependency on macros at import time.
+        from . import macros
+        if macros.is_recording():
+            macros.record_step(observation.window, action, target, value, key,
+                               direction)
 
         recent = history[-no_change_limit:]
         if len(recent) == no_change_limit and all(not s.changed for s in recent):

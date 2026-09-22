@@ -8,10 +8,12 @@ panic/budget terminals are proven rather than asserted.
 """
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from qwen_omarchy_control import panic, task, triage, vision
+from qwen_omarchy_control import audit, panic, task, triage, vision
 
 
 def cand(index, role="button", label="Save", enabled=True):
@@ -62,6 +64,10 @@ def answers(operation, **kw):
 
 class GuiTaskTest(unittest.TestCase):
     def setUp(self):
+        # Never touch the real trajectory log, even if a test forgets audit=False.
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_log = audit.LOG_FILE
+        audit.LOG_FILE = Path(self._tmp.name) / "trajectory.jsonl"
         self.cfg = {
             "enabled": True, "minConfidence": 0.60, "minIntervalMs": 0,
             "jevOutcomeThreshold": 0.7, "taskMaxActions": 8,
@@ -79,6 +85,8 @@ class GuiTaskTest(unittest.TestCase):
     def tearDown(self):
         for p in self._patches:
             p.stop()
+        audit.LOG_FILE = self._old_log
+        self._tmp.cleanup()
 
     @staticmethod
     def _diff(before, after):
@@ -225,6 +233,19 @@ class GuiTaskTest(unittest.TestCase):
             result = task.gui_task_safe("go", cfg=self.cfg)
         self.assertEqual(result["status"], "needs_agent")
         self.assertIn("no key", result["reason"])
+
+    def test_audit_flag_off_writes_nothing(self):
+        # Regression: gui_task logged every step regardless of cfg['audit'],
+        # which polluted the real trajectory log during a test run.
+        o = obs([cand(0, label="Save")], labels=["Save"])
+        b = ScriptedBackend([o] * 6)
+        self.assertEqual(self.cfg["audit"], False)
+        with mock.patch.object(triage, "ask",
+                               side_effect=[answers("click", click_target="e0"),
+                                            answers("done")]), \
+                mock.patch.object(task, "_verify_done", return_value=(True, "ok")):
+            task.gui_task("go", cfg=self.cfg, _backend=b)
+        self.assertFalse(audit.LOG_FILE.exists())
 
 
 class VisionBackendBindingTest(unittest.TestCase):

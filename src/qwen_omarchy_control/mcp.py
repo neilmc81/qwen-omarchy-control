@@ -15,7 +15,8 @@ import sys
 import traceback
 import uuid
 
-from . import browser, panic, task, triage, vision
+from . import (browser, macros, outcome, panic, sequence, task, triage, vision,
+               watch)
 from .desktop import DesktopController, DesktopError
 from .policy import PolicyError, reject_sensitive_text
 PROTOCOL_VERSION = "2025-06-18"
@@ -433,6 +434,138 @@ TOOLS = [
         },
     },
     {
+        "name": "describe_outcome",
+        "description": "Answer \"did it work?\" about a GUI action: read the window "
+                       "and judge whether the goal is now satisfied, returning a "
+                       "short sentence in `spoken` to read aloud. Use after a click "
+                       "or task when the user asks if it worked. Read-only, never "
+                       "clicks. Level 1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string",
+                         "description": "What was meant to happen. Omit to use the "
+                                        "most recent recorded action's goal."},
+                "window": {"type": "string",
+                           "description": "Target window (pid or title substring). "
+                                          "Omit for the focused window."},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "do_sequence",
+        "description": "Run several GUI steps in order in one request ('open "
+                       "Documents, make a folder called Taxes, and move the newest "
+                       "PDF there'). Each step is a bounded, verified task; the run "
+                       "STOPS at the first step it cannot verify and names it, and "
+                       "returns a `spoken` summary. Use for a short ordered sequence "
+                       "instead of chaining do_gui_task calls yourself. Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "The overall goal, for the summary."},
+                "window": {"type": "string",
+                           "description": "Default window for steps (pid/title). Omit for focused."},
+                "inputs": {"type": "object",
+                           "description": "Literal values steps may type, keyed by name.",
+                           "additionalProperties": {"type": "string"}},
+                "steps": {"type": "array", "minItems": 1, "maxItems": 12,
+                          "items": {
+                              "type": "object",
+                              "properties": {
+                                  "goal": {"type": "string"},
+                                  "verification": {"type": "array", "items": {"type": "string"}},
+                                  "inputs": {"type": "object",
+                                             "additionalProperties": {"type": "string"}},
+                                  "window": {"type": "string"},
+                              },
+                              "required": ["goal"],
+                              "additionalProperties": False,
+                          }},
+            },
+            "required": ["goal", "steps"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "macro_record",
+        "description": "Record a desktop chore once so it can be replayed by name "
+                       "later. action='start' with a name begins recording the "
+                       "verified steps of subsequent do_gui_task calls; action='stop' "
+                       "saves it; action='list' shows saved macros; action='delete' "
+                       "removes one. Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["start", "stop", "list", "delete"]},
+                "name": {"type": "string",
+                         "description": "Macro name (required for start/delete)."},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "macro_replay",
+        "description": "Replay a saved macro by name: re-runs its recorded steps, "
+                       "re-targeting live elements and verifying each step, stopping "
+                       "honestly at the step that fails. Returns a `spoken` summary. "
+                       "Use for 'do my monthly report' after recording it once. "
+                       "Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "watch_start",
+        "description": "Watch a window and report when a condition becomes true "
+                       "(\"tell me when the export finishes\"). Read-only; never "
+                       "clicks. Starts a background job and returns a job_id; poll "
+                       "it with watch_check. Level 1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "condition": {"type": "string",
+                              "description": "The condition to watch for, e.g. "
+                                             "'the export has finished'."},
+                "window": {"type": "string",
+                           "description": "Target window (pid/title). Omit for focused."},
+                "timeout_s": {"type": "number", "minimum": 5, "maximum": 3600},
+                "threshold": {"type": "number", "minimum": 0.5, "maximum": 1.0,
+                              "description": "Confidence to count the condition as met (default 0.7)."},
+            },
+            "required": ["condition"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "watch_check",
+        "description": "Check a watch job started with watch_start: returns its "
+                       "status (running/met/timeout/stopped) and a `spoken` sentence "
+                       "when it is done. Level 1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "watch_stop",
+        "description": "Stop a watch job started with watch_start. Level 1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "browser_navigate",
         "description": "Navigate the browser's tab to an http(s) URL. Prefer "
                        "open_url to open a new page; use this to change the page "
@@ -482,7 +615,8 @@ class McpHandler:
     READ_ONLY = frozenset({
         "get_active_window", "list_windows", "list_workspaces", "get_monitors",
         "get_audio_status", "get_system_status", "read_window", "read_screen",
-        "find_element", "describe_actions", "browser_read",
+        "find_element", "describe_actions", "describe_outcome", "browser_read",
+        "watch_start", "watch_check", "watch_stop",
     })
 
     def __init__(self) -> None:
@@ -655,6 +789,49 @@ class McpHandler:
                 constraints=[str(v) for v in (args.get("constraints") or [])],
                 max_actions=int(args["max_actions"]) if args.get("max_actions") else None,
             )
+        if name == "describe_outcome":
+            return outcome.describe_outcome(
+                str(args["goal"]) if args.get("goal") else None,
+                str(args["window"]) if args.get("window") else None,
+            )
+        if name == "do_sequence":
+            inputs = args.get("inputs") or {}
+            for value in inputs.values():
+                if reject_sensitive_text(str(value)):
+                    raise PolicyError(
+                        "refused: an input value looks sensitive "
+                        "(password/secret/card).")
+            return sequence.do_sequence(
+                str(args["goal"]),
+                args.get("steps") or [],
+                window=str(args["window"]) if args.get("window") else None,
+                inputs={str(k): str(v) for k, v in inputs.items()},
+            )
+        if name == "macro_record":
+            action = str(args.get("action") or "")
+            if action == "start":
+                return macros.start(str(args.get("name") or ""))
+            if action == "stop":
+                return macros.stop()
+            if action == "list":
+                return {"macros": macros.list_macros()}
+            if action == "delete":
+                return macros.delete(str(args.get("name") or ""))
+            raise PolicyError(f"macro_record action must be start/stop/list/delete")
+        if name == "macro_replay":
+            return macros.replay(str(args["name"]))
+        if name == "watch_start":
+            return watch.watch_start(
+                str(args["window"]) if args.get("window") else None,
+                str(args["condition"]),
+                interval_s=float(args.get("interval_s") or 5.0),
+                timeout_s=float(args.get("timeout_s") or 900.0),
+                threshold=float(args.get("threshold") or 0.7),
+            )
+        if name == "watch_check":
+            return watch.watch_check(str(args["job_id"]))
+        if name == "watch_stop":
+            return watch.watch_stop(str(args["job_id"]))
         if name == "browser_read":
             return browser.browser_read(
                 str(args["goal"]) if args.get("goal") else None,
