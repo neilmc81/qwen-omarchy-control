@@ -389,6 +389,7 @@ def gui_task(goal: str, window: str | None = None,
 
     history: list[Step] = []
     changed_ever = False
+    announce_takeover = True
     started = time.monotonic()
 
     try:
@@ -493,6 +494,18 @@ def gui_task(goal: str, window: str | None = None,
         try:
             panic.guard(f"a {action} step")
             _throttle(cfg)
+            # Announce the takeover lazily, once, immediately before the first
+            # input is delivered — so a task that only reads or gives up never
+            # raises a false "don't touch the mouse" alert.
+            if announce_takeover and cfg.get("announceTakeover", True):
+                announce_takeover = False
+                target_name = target.label if target else goal
+                vision._notify(
+                    "Qwen is taking control",
+                    f"Working on \"{target_name}\" in "
+                    f"{observation.window.get('title') or 'the window'}. "
+                    "Don't use the mouse or keyboard for a moment.",
+                )
             detail = backend.execute(action, target, value, key, direction,
                                      observation.window)
         except (panic.PanicError, TaskError, vision.VisionError) as exc:

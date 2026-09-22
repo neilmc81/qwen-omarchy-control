@@ -234,6 +234,44 @@ class GuiTaskTest(unittest.TestCase):
         self.assertEqual(result["status"], "needs_agent")
         self.assertIn("no key", result["reason"])
 
+    def test_takeover_announced_once_before_first_input(self):
+        # The user must be warned before the agent grabs the mouse. One notice
+        # per task, fired lazily so a read-only/give-up task stays silent.
+        o = obs([cand(0, label="Save")], labels=["Save"])
+        b = ScriptedBackend([o] * 6)
+        with mock.patch.object(vision, "_notify") as notify, \
+                mock.patch.object(triage, "ask",
+                                  side_effect=[answers("click", click_target="e0"),
+                                               answers("click", click_target="e0"),
+                                               answers("done")]), \
+                mock.patch.object(task, "_verify_done", return_value=(True, "ok")):
+            task.gui_task("go", cfg=self.cfg, _backend=b)
+        notify.assert_called_once()
+        self.assertIn("taking control", notify.call_args[0][0].lower())
+
+    def test_no_announcement_when_nothing_is_delivered(self):
+        # A task that never reaches a delivery (blocked decision) must not warn.
+        o = obs([cand(0, label="Save")], labels=["Save"])
+        b = ScriptedBackend([o] * 6)
+        with mock.patch.object(vision, "_notify") as notify, \
+                mock.patch.object(triage, "ask",
+                                  side_effect=[answers("click", click_target="none")]):
+            result = task.gui_task("go", cfg=self.cfg, _backend=b)
+        self.assertEqual(result["status"], "blocked")
+        notify.assert_not_called()
+
+    def test_announcement_can_be_disabled(self):
+        o = obs([cand(0, label="Save")], labels=["Save"])
+        b = ScriptedBackend([o] * 6)
+        cfg = dict(self.cfg, announceTakeover=False)
+        with mock.patch.object(vision, "_notify") as notify, \
+                mock.patch.object(triage, "ask",
+                                  side_effect=[answers("click", click_target="e0"),
+                                               answers("done")]), \
+                mock.patch.object(task, "_verify_done", return_value=(True, "ok")):
+            task.gui_task("go", cfg=cfg, _backend=b)
+        notify.assert_not_called()
+
     def test_audit_flag_off_writes_nothing(self):
         # Regression: gui_task logged every step regardless of cfg['audit'],
         # which polluted the real trajectory log during a test run.

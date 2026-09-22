@@ -204,6 +204,7 @@ def replay(name: str, cfg: dict | None = None,
     backend = _backend or task.VisionBackend(cfg)
 
     history: list[dict] = []
+    announce_takeover = True
     started = time.monotonic()
     window_hint = (macro.get("window") or {}).get("title")
 
@@ -233,6 +234,16 @@ def replay(name: str, cfg: dict | None = None,
         try:
             panic.guard(f"a replay step")
             vision._throttle(int(cfg.get("minIntervalMs", 1200)))
+            # Announce the takeover once, before the first delivered input, so
+            # a macro that fails to find its target never falsely warns.
+            if announce_takeover and cfg.get("announceTakeover", True):
+                announce_takeover = False
+                vision._notify(
+                    "Qwen is replaying a macro",
+                    f"Running \"{name}\" in "
+                    f"{observation.window.get('title') or 'the window'}. "
+                    "Don't use the mouse or keyboard for a moment.",
+                )
             backend.execute(action, target, step.get("value"), step.get("key"),
                             step.get("direction"), observation.window)
         except (panic.PanicError, task.TaskError, vision.VisionError) as exc:

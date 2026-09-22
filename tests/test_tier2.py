@@ -178,14 +178,13 @@ class MacroTest(unittest.TestCase):
         self._patches = [
             mock.patch.object(vision, "available", return_value=(True, "")),
             mock.patch.object(vision, "_throttle", return_value=0.0),
-            mock.patch.object(vision, "panic", create=True),
         ]
-        for p in self._patches[:2]:
+        for p in self._patches:
             p.start()
 
     def tearDown(self):
         macros._active = None
-        for p in self._patches[:2]:
+        for p in self._patches:
             p.stop()
         macros.MACROS_DIR = self._old_dir
         self._tmp.cleanup()
@@ -254,6 +253,35 @@ class MacroTest(unittest.TestCase):
     def test_missing_macro_raises(self):
         with self.assertRaises(macros.MacroError):
             macros.load("nope")
+
+    def test_replay_announces_takeover_once(self):
+        macros.start("open docs")
+        macros.record_step({"title": "Files", "app_name": "Files"},
+                           "click", cand(0, label="Documents"), None, None, None)
+        macros.record_step({"title": "Files", "app_name": "Files"},
+                           "press_key", None, None, "Return", None)
+        macros.stop()
+        live = [obs([cand(5, label="Documents")], title="Files"),
+                obs([cand(5, label="Documents")], title="Docs"),
+                obs([cand(5, label="Documents")], title="Docs"),
+                obs([cand(5, label="Documents")], title="Docs")]
+        backend = ScriptedBackend(live)
+        with mock.patch.object(vision, "available", return_value=(True, "")), \
+                mock.patch.object(vision, "_notify") as notify:
+            macros.replay("open docs", cfg=self.cfg, _backend=backend)
+        notify.assert_called_once()
+        self.assertIn("replaying a macro", notify.call_args[0][0].lower())
+
+    def test_replay_no_announcement_when_target_missing(self):
+        macros.start("do thing")
+        macros.record_step({"title": "Files", "app_name": "Files"},
+                           "click", cand(0, label="Documents"), None, None, None)
+        macros.stop()
+        backend = ScriptedBackend([obs([cand(1, label="Pictures")], title="Files")])
+        with mock.patch.object(vision, "available", return_value=(True, "")), \
+                mock.patch.object(vision, "_notify") as notify:
+            macros.replay("do thing", cfg=self.cfg, _backend=backend)
+        notify.assert_not_called()
 
 
 class JobsTest(unittest.TestCase):
