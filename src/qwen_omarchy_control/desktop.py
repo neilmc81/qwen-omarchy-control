@@ -131,6 +131,44 @@ def _ocr(png: bytes, psm: str = "3") -> tuple[int, str]:
                    timeout=25.0, env=env)
 
 
+def _ocr_words(png: bytes) -> tuple[int, list[dict]]:
+    """tesseract TSV over PNG bytes -> (rc, words with pixel boxes).
+
+    Each word is `{text, left, top, width, height, conf}` in the *image* pixel
+    space of `png`. The caller maps these back to screen coordinates. This is
+    what makes OCR clickable: read_screen returns text only, so a model told to
+    "click the video" had no coordinates and guessed, which lands in the wrong
+    place. Word boxes are the missing half.
+    """
+    import tempfile
+    env = session_env({"OMP_THREAD_LIMIT": "1"})
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
+        tmp.write(png)
+        tmp.flush()
+        rc, out = run(["tesseract", tmp.name, "-", "--psm", "3", "-l", "eng", "tsv"],
+                      timeout=25.0, env=env)
+    if rc != 0:
+        return rc, []
+    words: list[dict] = []
+    for line in out.splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 12:
+            continue
+        text = parts[11].strip()
+        if not text:
+            continue
+        try:
+            words.append({
+                "text": text,
+                "left": int(parts[6]), "top": int(parts[7]),
+                "width": int(parts[8]), "height": int(parts[9]),
+                "conf": float(parts[10]),
+            })
+        except ValueError:
+            continue
+    return 0, words
+
+
 def hypr_env() -> dict:
     """Environment with the Hyprland signature (and Wayland vars) resolved.
 
@@ -719,6 +757,81 @@ class DesktopController:
             raise _fail("tesseract OCR failed")
         text = out.strip()
         return text[: self.OCR_LIMIT] + (" ..." if len(text) > self.OCR_LIMIT else "")
+
+    def find_text(self, needle: str, window: str | None = None) -> dict:
+        """Find text on screen by OCR and return its CENTRE in screen pixels.
+
+        The click coordinates the OCR fallback was missing. `read_screen` gives
+        the words but not where they are, so a model asked to "click the video"
+        guessed a position and clicked the wrong place. This OCRs the target
+        window (or the focused monitor) with word boxes, matches `needle`
+        case-insensitively, and maps the winning box back to absolute screen
+        coordinates, accounting for the `grim -s 0.75` capture scale and the
+        window's origin.
+
+        Returns `{found, x, y, text, confidence, candidates}`; `candidates` are
+        the other matches so the caller can disambiguate. Read-only.
+        """
+        needle = (needle or "").strip()
+        if not needle:
+            raise _fail("find_text needs text to look for")
+
+        # Choose the capture region: one window if named/active, else the monitor.
+        origin_x = origin_y = 0
+        if window is not None:
+            win = self._resolve_window(window)
+        else:
+            win = self._active() or None
+        if win is not None:
+            geo = self._window_geometry(win)
+            if geo is not None:
+                origin_x, origin_y, gw, gh = geo
+                region = f"{origin_x},{origin_y} {gw}x{gh}"
+            else:
+                win = None
+        if win is None:
+            data = hyprctl_json("monitors") or []
+            target = next((m for m in data if m.get("focused")),
+                          data[0] if data else None)
+            if target is None:
+                raise _fail("no monitor or window to capture")
+            origin_x, origin_y = int(target["x"]), int(target["y"])
+            region = f"{origin_x},{origin_y} {int(target['width'])}x{int(target['height'])}"
+
+        rc, png = run_bin(["grim", "-s", "0.75", "-g", region, "-"], timeout=15.0)
+        if rc != 0 or not png:
+            raise _fail("grim capture failed")
+        rc, words = _ocr_words(png)
+        if rc != 0:
+            raise _fail("tesseract OCR failed")
+
+        # grim scales by 0.75, so image pixels * (1/0.75) = screen pixels.
+        scale = 1.0 / 0.75
+        target_lower = needle.lower()
+        matches = []
+        for w in words:
+            if target_lower in w["text"].lower():
+                cx = (w["left"] + w["width"] / 2) * scale + origin_x
+                cy = (w["top"] + w["height"] / 2) * scale + origin_y
+                matches.append({
+                    "text": w["text"], "x": int(round(cx)), "y": int(round(cy)),
+                    "confidence": round(w["conf"], 1),
+                })
+        if not matches:
+            return {"found": False, "text": needle, "candidates": [],
+                    "reason": f"no on-screen text matched {needle!r}"}
+        # Rank by match quality before OCR confidence: an exact hit beats a
+        # longer word that merely contains the needle (measured: "Omarchy" lost
+        # to the OCR misread "omarchyorg" on confidence alone), and among
+        # substrings the shortest is closest to what was asked for.
+        def rank(m: dict) -> tuple:
+            text = m["text"].lower()
+            exact = 0 if text == target_lower else 1
+            return (exact, len(text), -m["confidence"])
+        matches.sort(key=rank)
+        best = matches[0]
+        return {"found": True, "text": best["text"], "x": best["x"], "y": best["y"],
+                "confidence": best["confidence"], "candidates": matches[1:8]}
 
     # ----------------------------------------------------------- validation
     def _check_workspace(self, number: int) -> int:

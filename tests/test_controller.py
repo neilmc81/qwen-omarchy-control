@@ -197,6 +197,57 @@ class ControllerTest(unittest.TestCase):
         self.assertIn("org.omarchy.terminal", desc)
 
 
+class FindTextTest(unittest.TestCase):
+    """OCR text -> screen coordinates, so OCR-only windows are clickable.
+
+    Regression: read_screen returned words with no positions, so a model told
+    to click something in Chrome guessed and clicked the wrong place.
+    """
+
+    def setUp(self):
+        self.ctrl = DesktopController()
+
+    def test_maps_image_box_to_screen_coords(self):
+        # grim -s 0.75: image px * (1/0.75) + window origin = screen px.
+        words = [{"text": "Download", "left": 300, "top": 300,
+                  "width": 120, "height": 30, "conf": 88.0}]
+        with mock.patch.object(desktop, "hyprctl_json",
+                               return_value=[{"x": 0, "y": 0, "width": 1366, "height": 768,
+                                             "focused": True}]), \
+                mock.patch.object(desktop, "run_bin",
+                                  return_value=(0, b"png")), \
+                mock.patch.object(desktop, "_ocr_words", return_value=(0, words)):
+            out = self.ctrl.find_text("download")
+        self.assertTrue(out["found"])
+        # centre (300+60, 300+15) = (360, 315) image px -> *4/3 = (480, 420) screen
+        self.assertEqual((out["x"], out["y"]), (480, 420))
+
+    def test_exact_match_beats_a_confident_longer_one(self):
+        words = [
+            {"text": "omarchyorg", "left": 10, "top": 10, "width": 50,
+             "height": 10, "conf": 99.0},
+            {"text": "Omarchy", "left": 200, "top": 200, "width": 40,
+             "height": 10, "conf": 60.0},
+        ]
+        with mock.patch.object(desktop, "hyprctl_json",
+                               return_value=[{"x": 0, "y": 0, "width": 100, "height": 100,
+                                             "focused": True}]), \
+                mock.patch.object(desktop, "run_bin", return_value=(0, b"png")), \
+                mock.patch.object(desktop, "_ocr_words", return_value=(0, words)):
+            out = self.ctrl.find_text("Omarchy")
+        self.assertEqual(out["text"], "Omarchy")
+
+    def test_not_found_is_honest(self):
+        with mock.patch.object(desktop, "hyprctl_json",
+                               return_value=[{"x": 0, "y": 0, "width": 100, "height": 100,
+                                             "focused": True}]), \
+                mock.patch.object(desktop, "run_bin", return_value=(0, b"png")), \
+                mock.patch.object(desktop, "_ocr_words", return_value=(0, [])):
+            out = self.ctrl.find_text("nothing here")
+        self.assertFalse(out["found"])
+        self.assertNotIn("x", out)
+
+
 class SessionEnvTest(unittest.TestCase):
     """The gateway-spawned server must resolve the graphical-session env lazily.
 

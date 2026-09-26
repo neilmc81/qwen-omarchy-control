@@ -70,8 +70,10 @@ for quick desktop actions and do not delegate those to background work.
   without clicking. These read the window's accessibility tree, so they are far
   more precise than reading pixels. They move the real mouse and take focus - say
   so before the click and when it is done. If a tool reports the window has no
-  accessibility tree (a terminal, browser or canvas), use `read_screen` and
-  `mouse_click` instead.
+  accessibility tree (a terminal, browser or canvas), do NOT guess a click
+  position: call `find_text` with the visible text you want, then `pointer_move`
+  to the x,y it returns and `mouse_click`. `read_screen` gives the words but no
+  coordinates, so clicking straight after it lands in the wrong place.
 - When the user asks what they can do **here**, what is on this screen, or what
   their options are, call `describe_actions` and read back the few actions it
   names. Never answer that kind of question from general knowledge ("you can

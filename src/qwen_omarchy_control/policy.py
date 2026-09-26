@@ -66,6 +66,7 @@ def classify(operation: str) -> str:
         "read_screen",
         "pointer_move",
         "find_element",
+        "find_text",
         "describe_actions",
         "describe_outcome",
         "watch_start",

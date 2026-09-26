@@ -647,19 +647,71 @@ def _bind_and_read(cfg: dict, window: dict,
     return str(target), tab, sem
 
 
-def _with_browser(cfg: dict, fn):
-    """Run `fn(window)` against the browser, refusing honestly when unusable.
+def _cdp_fallback(fn_name: str, cfg: dict, *args):
+    """Run a browser op over direct CDP. Returns None when CDP is unreachable.
+
+    Cua binds one *native window* to a browser target and refuses whenever it
+    cannot prove an exact, non-heuristic binding. Two cases do that here, both
+    measured on this machine:
+
+      * more than one browser window open (heuristic title-only binding), and
+      * `browser_prepare` returning `browser_reconnect_exhausted` even for a
+        single window, after the daemon / browser / endpoint changed state.
+
+    In both the driver refuses every read/mutation, but CDP addresses tabs and
+    needs no window binding. It uses the same loopback endpoint and the same
+    existing-profile security boundary, so it is the honest fallback rather than
+    an error. `CdpError` (no endpoint) means "Cua may still work" -> None.
+    """
+    if not cfg.get("useCdpFallback", True):
+        return None
+    try:
+        if fn_name == "read":
+            return _cdp_read(cfg, args[0])
+        if fn_name == "click":
+            return _cdp_click(cfg, args[0])
+        if fn_name == "type":
+            return _cdp_type(cfg, args[0], args[1], args[2])
+        if fn_name == "navigate":
+            return _cdp_navigate(cfg, args[0])
+    except (cdp.CdpError, BrowserError):
+        return None
+    return None
+
+
+# Errors that mean "Cua could not bind/prepare" rather than "the page/element
+# was wrong". Only these earn the CDP retry; a genuine "no element matched" must
+# surface as-is rather than being retried against a different tab.
+def _is_binding_failure(exc: Exception) -> bool:
+    text = str(exc)
+    return any(marker in text for marker in (
+        "browser_prepare refused", "reconnect_exhausted", "binding",
+        "DevTools endpoint", "could not be bound", "no usable browser",
+    ))
+
+
+def _with_browser(cfg: dict, fn, cdp_name: str | None = None, cdp_args: tuple = ()):
+    """Run `fn(window)` against the browser, falling back to CDP when unusable.
 
     The typed path needs an exact binding, which the driver only produces when
-    the browser owns a single top-level window. With several, every window binds
-    heuristically and every element read/mutation is refused, so walk the
-    candidates is pointless - say so clearly instead of returning an empty page.
+    the browser owns a single top-level window. With several (or when the
+    driver's own prepare step refuses), every element read/mutation is refused;
+    when the caller supplied a CDP counterpart, that route is used instead.
     A pid with several *identically titled* windows is still retried, because a
     transient attribution failure there is worth one more candidate.
     """
     if _multi_window(cfg):
+        out = _cdp_fallback(cdp_name, cfg, *cdp_args) if cdp_name else None
+        if out is not None:
+            return out
         raise _single_window_error(cfg)
-    candidates = _bind_candidates(cfg)
+    try:
+        candidates = _bind_candidates(cfg)
+    except BrowserError as exc:
+        out = _cdp_fallback(cdp_name, cfg, *cdp_args) if cdp_name else None
+        if out is not None:
+            return out
+        raise
     last: Exception | None = None
     for window in candidates:
         try:
@@ -667,10 +719,18 @@ def _with_browser(cfg: dict, fn):
             return fn(window)
         except BrowserError as exc:
             if not _is_ambiguity(exc):
+                if cdp_name and _is_binding_failure(exc):
+                    out = _cdp_fallback(cdp_name, cfg, *cdp_args)
+                    if out is not None:
+                        return out
                 raise
             last = exc
             continue
     if last is not None:
+        if cdp_name:
+            out = _cdp_fallback(cdp_name, cfg, *cdp_args)
+            if out is not None:
+                return out
         raise last
     raise BrowserError("no browser window could be bound")
 
@@ -729,7 +789,7 @@ def browser_read(goal: str | None = None, cfg: dict | None = None) -> dict:
             "elapsed_s": round(time.monotonic() - started, 2),
         }
 
-    return _with_browser(cfg, run)
+    return _with_browser(cfg, run, cdp_name="read", cdp_args=(goal,))
 
 
 def browser_click(goal: str, cfg: dict | None = None,
@@ -798,7 +858,7 @@ def browser_click(goal: str, cfg: dict | None = None,
             })
         return out
 
-    return _with_browser(cfg, run)
+    return _with_browser(cfg, run, cdp_name="click", cdp_args=(goal,))
 
 
 def browser_type(text: str, goal: str | None = None, cfg: dict | None = None,
@@ -860,7 +920,7 @@ def browser_type(text: str, goal: str | None = None, cfg: dict | None = None,
             })
         return out
 
-    return _with_browser(cfg, run)
+    return _with_browser(cfg, run, cdp_name="type", cdp_args=(text, goal, replace))
 
 
 def browser_navigate(url: str, cfg: dict | None = None) -> dict:
@@ -890,7 +950,7 @@ def browser_navigate(url: str, cfg: dict | None = None) -> dict:
             "elapsed_s": round(time.monotonic() - started, 2),
         }
 
-    return _with_browser(cfg, run)
+    return _with_browser(cfg, run, cdp_name="navigate", cdp_args=(url,))
 
 
 def browser_search(query: str, cfg: dict | None = None) -> dict:

@@ -434,6 +434,27 @@ TOOLS = [
         },
     },
     {
+        "name": "find_text",
+        "description": "Find text on screen by OCR and return its screen x,y so you "
+                       "can click it. This is the coordinate half of read_screen: use "
+                       "it when a control has no accessibility label (a video "
+                       "thumbnail, a canvas, anything inside Chrome) and you must "
+                       "click it. Then pointer_move to the returned x,y and "
+                       "mouse_click. Read-only. Level 1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string",
+                         "description": "The text to locate, e.g. 'the video title'."},
+                "window": {"type": "string",
+                           "description": "Restrict the search to one window (pid or "
+                                          "title substring). Omit for the focused app."},
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "describe_outcome",
         "description": "Answer \"did it work?\" about a GUI action: read the window "
                        "and judge whether the goal is now satisfied, returning a "
@@ -615,8 +636,8 @@ class McpHandler:
     READ_ONLY = frozenset({
         "get_active_window", "list_windows", "list_workspaces", "get_monitors",
         "get_audio_status", "get_system_status", "read_window", "read_screen",
-        "find_element", "describe_actions", "describe_outcome", "browser_read",
-        "watch_start", "watch_check", "watch_stop",
+        "find_element", "find_text", "describe_actions", "describe_outcome",
+        "browser_read", "watch_start", "watch_check", "watch_stop",
     })
 
     def __init__(self) -> None:
@@ -788,6 +809,11 @@ class McpHandler:
                 verification=[str(v) for v in (args.get("verification") or [])],
                 constraints=[str(v) for v in (args.get("constraints") or [])],
                 max_actions=int(args["max_actions"]) if args.get("max_actions") else None,
+            )
+        if name == "find_text":
+            return ctrl.find_text(
+                str(args["text"]),
+                str(args["window"]) if args.get("window") else None,
             )
         if name == "describe_outcome":
             return outcome.describe_outcome(

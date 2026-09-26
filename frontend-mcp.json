@@ -89,6 +89,10 @@
           "enabled": true,
           "description": "Locate a UI element by name using the window's accessibility tree (role, label, position). Read-only; prefer over OCR when a control has a clear label."
         },
+        "find_text": {
+          "enabled": true,
+          "description": "Find text on screen by OCR and return its screen x,y so you can click it. The coordinate half of read_screen: use it when a control has no accessibility label (a video thumbnail, a canvas, anything inside Chrome). Then pointer_move to x,y and mouse_click. Read-only."
+        },
         "describe_actions": {
           "enabled": true,
           "description": "Answer 'what can I do here?' for a window: read its accessibility tree and name the 3-5 meaningful actions (open, save, send, delete, navigate), best first. Read-only, no click. Use when the user asks what they can do in the current window, or what is on screen, or to orient before clicking."
