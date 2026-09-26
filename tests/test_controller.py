@@ -208,7 +208,7 @@ class FindTextTest(unittest.TestCase):
         self.ctrl = DesktopController()
 
     def test_maps_image_box_to_screen_coords(self):
-        # grim -s 0.75: image px * (1/0.75) + window origin = screen px.
+        # Full-resolution capture, so image px map 1:1 to screen px plus origin.
         words = [{"text": "Download", "left": 300, "top": 300,
                   "width": 120, "height": 30, "conf": 88.0}]
         with mock.patch.object(desktop, "hyprctl_json",
@@ -219,8 +219,22 @@ class FindTextTest(unittest.TestCase):
                 mock.patch.object(desktop, "_ocr_words", return_value=(0, words)):
             out = self.ctrl.find_text("download")
         self.assertTrue(out["found"])
-        # centre (300+60, 300+15) = (360, 315) image px -> *4/3 = (480, 420) screen
-        self.assertEqual((out["x"], out["y"]), (480, 420))
+        # centre (300+60, 300+15) = (360, 315)
+        self.assertEqual((out["x"], out["y"]), (360, 315))
+
+    def test_window_origin_is_added(self):
+        # A window not at 0,0: the box centre is offset by the window origin.
+        words = [{"text": "Save", "left": 10, "top": 20, "width": 40,
+                  "height": 10, "conf": 90.0}]
+        with mock.patch.object(desktop.DesktopController, "_active",
+                               return_value={"class": "app"}), \
+                mock.patch.object(desktop.DesktopController, "_window_geometry",
+                                  return_value=(100, 50, 800, 600)), \
+                mock.patch.object(desktop, "run_bin", return_value=(0, b"png")), \
+                mock.patch.object(desktop, "_ocr_words", return_value=(0, words)):
+            out = self.ctrl.find_text("save")
+        # centre (10+20, 20+5) = (30,25) + origin (100,50) = (130,75)
+        self.assertEqual((out["x"], out["y"]), (130, 75))
 
     def test_exact_match_beats_a_confident_longer_one(self):
         words = [
@@ -246,6 +260,44 @@ class FindTextTest(unittest.TestCase):
             out = self.ctrl.find_text("nothing here")
         self.assertFalse(out["found"])
         self.assertNotIn("x", out)
+
+    def test_multi_word_phrase_matches_by_joining_words(self):
+        # Regression: OCR returns one entry PER WORD, so "TARGET BETA" (two
+        # words) never matched a single-word search and the model got no
+        # coordinates.
+        words = [
+            {"text": "TARGET", "left": 400, "top": 300, "width": 80,
+             "height": 20, "conf": 90.0},
+            {"text": "BETA", "left": 490, "top": 300, "width": 60,
+             "height": 20, "conf": 90.0},
+        ]
+        with mock.patch.object(desktop, "hyprctl_json",
+                               return_value=[{"x": 0, "y": 0, "width": 1000,
+                                              "height": 800, "focused": True}]), \
+                mock.patch.object(desktop, "run_bin", return_value=(0, b"png")), \
+                mock.patch.object(desktop, "_ocr_words", return_value=(0, words)):
+            out = self.ctrl.find_text("TARGET BETA")
+        self.assertTrue(out["found"])
+        # centre of the joined box: x (400+550)/2=475, y (300+320)/2=310
+        self.assertEqual((out["x"], out["y"]), (475, 310))
+
+    def test_capture_is_full_resolution(self):
+        # Regression: grim -s 0.75 dropped whole words (measured "TARGET BETA"
+        # vanished), so a valid target looked absent.
+        captured = {}
+
+        def fake_bin(argv, timeout=None):
+            captured["argv"] = argv
+            return (0, b"png")
+
+        with mock.patch.object(desktop, "hyprctl_json",
+                               return_value=[{"x": 0, "y": 0, "width": 800, "height": 600,
+                                             "focused": True}]), \
+                mock.patch.object(desktop, "run_bin", side_effect=fake_bin), \
+                mock.patch.object(desktop, "_ocr_words", return_value=(0, [])):
+            self.ctrl.find_text("x")
+        self.assertNotIn("-s", captured["argv"])
+        self.assertNotIn("0.75", captured["argv"])
 
 
 class SessionEnvTest(unittest.TestCase):

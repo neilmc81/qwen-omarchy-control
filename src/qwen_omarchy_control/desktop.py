@@ -718,7 +718,7 @@ class DesktopController:
         x, y, w, h = geo
         if w <= 0 or h <= 0:
             raise _fail("window has zero size")
-        rc, png = run_bin(["grim", "-s", "0.75", "-g", f"{x},{y} {w}x{h}", "-"], timeout=15.0)
+        rc, png = run_bin(["grim", "-g", f"{x},{y} {w}x{h}", "-"], timeout=15.0)
         if rc != 0 or not png:
             raise _fail("grim capture failed")
         rc, out = _ocr(png)
@@ -749,7 +749,7 @@ class DesktopController:
         geo = (int(target["x"]), int(target["y"]),
                int(target["width"]), int(target["height"]))
         x, y, w, h = geo
-        rc, png = run_bin(["grim", "-s", "0.75", "-g", f"{x},{y} {w}x{h}", "-"], timeout=15.0)
+        rc, png = run_bin(["grim", "-g", f"{x},{y} {w}x{h}", "-"], timeout=15.0)
         if rc != 0 or not png:
             raise _fail("grim capture failed")
         rc, out = _ocr(png)
@@ -766,8 +766,16 @@ class DesktopController:
         guessed a position and clicked the wrong place. This OCRs the target
         window (or the focused monitor) with word boxes, matches `needle`
         case-insensitively, and maps the winning box back to absolute screen
-        coordinates, accounting for the `grim -s 0.75` capture scale and the
-        window's origin.
+        coordinates.
+
+        Two things were measured on a fullscreen browser and both are handled:
+          * **Full resolution, not `grim -s 0.75`.** At 0.75 the downscaled text
+            loses whole words (measured: "TARGET BETA" vanished while "TARGET
+            ALPHA" survived), so a valid target looked absent. Capture is 1:1.
+          * **Multi-word phrases.** OCR returns one entry per word ("TARGET",
+            "BETA"), so a phrase match must join words on the same line into a
+            box. Matching a single word only found phrases that happened to be
+            one token, so "TARGET BETA" never matched.
 
         Returns `{found, x, y, text, confidence, candidates}`; `candidates` are
         the other matches so the caller can disambiguate. Read-only.
@@ -798,40 +806,86 @@ class DesktopController:
             origin_x, origin_y = int(target["x"]), int(target["y"])
             region = f"{origin_x},{origin_y} {int(target['width'])}x{int(target['height'])}"
 
-        rc, png = run_bin(["grim", "-s", "0.75", "-g", region, "-"], timeout=15.0)
+        # Full resolution: 0.75 lost whole words in testing.
+        rc, png = run_bin(["grim", "-g", region, "-"], timeout=15.0)
         if rc != 0 or not png:
             raise _fail("grim capture failed")
         rc, words = _ocr_words(png)
         if rc != 0:
             raise _fail("tesseract OCR failed")
 
-        # grim scales by 0.75, so image pixels * (1/0.75) = screen pixels.
-        scale = 1.0 / 0.75
         target_lower = needle.lower()
         matches = []
+
+        # 1) Single-word matches (exact or substring), box as-is.
         for w in words:
             if target_lower in w["text"].lower():
-                cx = (w["left"] + w["width"] / 2) * scale + origin_x
-                cy = (w["top"] + w["height"] / 2) * scale + origin_y
+                matches.append(self._word_match(w, origin_x, origin_y))
+
+        # 2) Phrase matches: join words that share a text line into one box,
+        #    then look for the needle across the joined text. This is what makes
+        #    "TARGET BETA" (two OCR words) findable.
+        for line in self._lines(words):
+            joined = " ".join(w["text"] for w in line).lower()
+            if target_lower in joined:
+                left = min(w["left"] for w in line)
+                top = min(w["top"] for w in line)
+                right = max(w["left"] + w["width"] for w in line)
+                bottom = max(w["top"] + w["height"] for w in line)
+                conf = sum(w["conf"] for w in line) / len(line)
                 matches.append({
-                    "text": w["text"], "x": int(round(cx)), "y": int(round(cy)),
-                    "confidence": round(w["conf"], 1),
+                    "text": " ".join(w["text"] for w in line),
+                    "x": int(round((left + right) / 2 + origin_x)),
+                    "y": int(round((top + bottom) / 2 + origin_y)),
+                    "confidence": round(conf, 1),
                 })
+
         if not matches:
             return {"found": False, "text": needle, "candidates": [],
                     "reason": f"no on-screen text matched {needle!r}"}
-        # Rank by match quality before OCR confidence: an exact hit beats a
-        # longer word that merely contains the needle (measured: "Omarchy" lost
-        # to the OCR misread "omarchyorg" on confidence alone), and among
-        # substrings the shortest is closest to what was asked for.
+        # Rank by match quality before OCR confidence: exact phrase beats a
+        # longer word that merely contains the needle, and among substrings the
+        # shortest is closest to what was asked for.
         def rank(m: dict) -> tuple:
             text = m["text"].lower()
             exact = 0 if text == target_lower else 1
             return (exact, len(text), -m["confidence"])
         matches.sort(key=rank)
         best = matches[0]
+        # Deduplicate near-identical candidates from the two passes.
+        seen, uniq = {(best["x"], best["y"])}, []
+        for m in matches[1:]:
+            if (m["x"], m["y"]) not in seen:
+                seen.add((m["x"], m["y"]))
+                uniq.append(m)
         return {"found": True, "text": best["text"], "x": best["x"], "y": best["y"],
-                "confidence": best["confidence"], "candidates": matches[1:8]}
+                "confidence": best["confidence"], "candidates": uniq[:8]}
+
+    @staticmethod
+    def _word_match(w: dict, origin_x: int, origin_y: int) -> dict:
+        return {
+            "text": w["text"],
+            "x": int(round(w["left"] + w["width"] / 2 + origin_x)),
+            "y": int(round(w["top"] + w["height"] / 2 + origin_y)),
+            "confidence": round(w["conf"], 1),
+        }
+
+    @staticmethod
+    def _lines(words: list[dict]) -> list[list[dict]]:
+        """Group OCR words into text lines by vertical overlap."""
+        lines: list[list[dict]] = []
+        for w in sorted(words, key=lambda x: (x["top"], x["left"])):
+            for line in lines:
+                wc = w["top"] + w["height"] / 2
+                lc = sum(x["top"] + x["height"] / 2 for x in line) / len(line)
+                if abs(wc - lc) <= max(w["height"], line[0]["height"]) * 0.6:
+                    line.append(w)
+                    break
+            else:
+                lines.append([w])
+        for line in lines:
+            line.sort(key=lambda x: x["left"])
+        return lines
 
     # ----------------------------------------------------------- validation
     def _check_workspace(self, number: int) -> int:
