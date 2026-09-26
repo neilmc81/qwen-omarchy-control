@@ -37,12 +37,63 @@ from .policy import classify, reject_sensitive_text
 TIMEOUT = 8.0
 
 
+def session_env(extra: dict | None = None) -> dict:
+    """Process environment with the graphical-session vars resolved.
+
+    Why this exists
+    ---------------
+    The MCP server is spawned by the gateway, a systemd *user* service that
+    starts at boot — before Hyprland has created its Wayland socket. The env it
+    inherits is therefore missing `WAYLAND_DISPLAY` (and often `DISPLAY`). Every
+    GUI subprocess needs those: `grim` (screen capture), `wtype` (typing),
+    `gtk-launch` (opening Chrome) and `foot` (agent windows) all fail without
+    them. Measured: with the boot env, `read_screen` fails "grim capture
+    failed"; with `WAYLAND_DISPLAY` set, it returns text.
+
+    Resolving lazily (and per call, not once at startup) matters: at spawn the
+    socket may not exist yet, so a value cached then would stay empty forever.
+    This is re-checked on each use, so the long-lived server picks the socket up
+    as soon as it appears. `bin/desktop-mcp` does the same for the initial
+    process env; this covers everything spawned afterwards too.
+    """
+    env = os.environ.copy()
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    if not env.get("WAYLAND_DISPLAY"):
+        try:
+            for name in sorted(os.listdir(runtime)):
+                if name.startswith("wayland-") and not name.endswith(".lock"):
+                    env["WAYLAND_DISPLAY"] = name
+                    break
+        except OSError:
+            pass
+    if not env.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        base = Path(runtime) / "hypr"
+        try:
+            for entry in sorted(base.iterdir()):
+                if (entry / ".socket.sock").exists():
+                    env["HYPRLAND_INSTANCE_SIGNATURE"] = entry.name
+                    break
+        except OSError:
+            pass
+    if not env.get("DISPLAY") and Path("/tmp/.X11-unix/X0").exists():
+        env["DISPLAY"] = ":0"
+    # Desktop notifications and pactl use the session bus; the gateway service
+    # has it but the stdio child it spawns may not.
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        bus = Path(runtime) / "bus"
+        if bus.exists():
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+    if extra:
+        env.update(extra)
+    return env
+
+
 def run(argv: list[str], timeout: float = TIMEOUT, env: dict | None = None) -> tuple[int, str]:
     """Run argv, return (returncode, stdout+stderr text). Never a shell."""
     try:
         proc = subprocess.run(
             argv, capture_output=True, text=True, timeout=timeout,
-            stdin=subprocess.DEVNULL, env=env,
+            stdin=subprocess.DEVNULL, env=env if env is not None else session_env(),
         )
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {timeout:.0f}s: {' '.join(argv)}"
@@ -56,7 +107,7 @@ def run_bin(argv: list[str], timeout: float = TIMEOUT) -> tuple[int, bytes]:
     """Run argv and return binary stdout (for grim/screenshots)."""
     try:
         proc = subprocess.run(argv, capture_output=True, timeout=timeout,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL, env=session_env())
     except subprocess.TimeoutExpired:
         return 124, b"timed out"
     except FileNotFoundError:
@@ -80,29 +131,15 @@ def _ocr(png: bytes, psm: str = "3") -> tuple[int, str]:
                    timeout=25.0, env=env)
 
 
-def hypr_env() -> dict | None:
-    """Environment with HYPRLAND_INSTANCE_SIGNATURE resolved, or None.
+def hypr_env() -> dict:
+    """Environment with the Hyprland signature (and Wayland vars) resolved.
 
-    hyprctl refuses to run without the signature. A user background service does
-    not inherit it from the graphical session, so we discover the running
-    instance under $XDG_RUNTIME_DIR/hypr/ ourselves.
+    hyprctl refuses to run without the signature, and the gateway-spawned server
+    does not inherit it (nor `WAYLAND_DISPLAY`) from the graphical session, so
+    it is discovered under $XDG_RUNTIME_DIR on each call. `session_env` does the
+    discovery; this is a thin alias kept so existing callers read clearly.
     """
-    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
-        return None  # inherited from the interactive session
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    base = Path(runtime) / "hypr"
-    if not base.is_dir():
-        return None
-    try:
-        signatures = sorted(p.name for p in base.iterdir()
-                            if (base / p.name / ".socket.sock").exists())
-    except OSError:
-        return None
-    if not signatures:
-        return None
-    env = os.environ.copy()
-    env["HYPRLAND_INSTANCE_SIGNATURE"] = signatures[0]
-    return env
+    return session_env()
 
 
 def hyprctl_json(*args: str) -> dict | list | None:
@@ -436,19 +473,24 @@ class DesktopController:
                 f"no installed application matches {name!r}. Name an installed "
                 "desktop entry, or say 'terminal', 'browser', or 'files'."
             )
-        if argv[0] in ("foot", "ghostty", "alacritty", "kitty", "wezterm"):
-            # Long-running terminal TUI (agent window): start detached, don't wait.
-            try:
-                subprocess.Popen(argv, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL,
-                                 stdin=subprocess.DEVNULL,
-                                 start_new_session=True)
-            except FileNotFoundError:
-                raise _fail(f"command not found: {argv[0]}")
+        # Launch detached with the std streams closed. Waiting on the launcher
+        # does not work for GUI apps: `gtk-launch` (Chrome, and anything using
+        # it) forks the real process, which then holds the inherited stdout pipe
+        # open, so `subprocess.run(capture_output=True)` blocks until the app
+        # exits and we wrongly report "timed out after 15s". Measured: a
+        # launcher that backgrounds a 6s child blocks a capture_output run for
+        # the full 6s. Starting detached sidesteps the pipe entirely; the window
+        # appearing is the real success signal, not the launcher's exit code.
+        is_terminal = argv[0] in ("foot", "ghostty", "alacritty", "kitty", "wezterm")
+        try:
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL,
+                             env=session_env(), start_new_session=True)
+        except FileNotFoundError:
+            raise _fail(f"command not found: {argv[0]}")
+        if is_terminal:
             return f"launched {name} in a terminal window"
-        rc, out = run(argv, timeout=15.0)
-        if rc != 0:
-            raise _fail(f"failed to launch {name!r}: " + (out or "unknown error"))
         return f"launched {name}"
 
     def launch_agent(self, agent: str, prompt: str = "") -> str:
@@ -475,7 +517,7 @@ class DesktopController:
             subprocess.Popen(argv, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL,
                              stdin=subprocess.DEVNULL,
-                             start_new_session=True)
+                             env=session_env(), start_new_session=True)
         except FileNotFoundError:
             raise _fail(f"command not found: {argv[0]}")
         if prompt:

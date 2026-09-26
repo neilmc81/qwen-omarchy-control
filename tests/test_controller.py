@@ -197,5 +197,56 @@ class ControllerTest(unittest.TestCase):
         self.assertIn("org.omarchy.terminal", desc)
 
 
+class SessionEnvTest(unittest.TestCase):
+    """The gateway-spawned server must resolve the graphical-session env lazily.
+
+    Regression: the MCP server is spawned at boot, before Hyprland's Wayland
+    socket exists, so it inherits no WAYLAND_DISPLAY. grim/wtype/foot/gtk-launch
+    then fail (measured: read_screen "grim capture failed", Chrome launch
+    timeout). The fix resolves the vars on each call, not once at startup.
+    """
+
+    def test_resolves_wayland_from_runtime_dir(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "wayland-1").write_text("")   # a socket, enough for listing
+            Path(d, "wayland-1.lock").write_text("")
+            env = {k: v for k, v in desktop.os.environ.items()
+                   if k not in ("WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE")}
+            with mock.patch.dict(desktop.os.environ, env, clear=True), \
+                    mock.patch.dict(desktop.os.environ, {"XDG_RUNTIME_DIR": d}):
+                resolved = desktop.session_env()
+            self.assertEqual(resolved["WAYLAND_DISPLAY"], "wayland-1")
+
+    def test_does_not_override_an_existing_value(self):
+        with mock.patch.dict(desktop.os.environ,
+                             {"WAYLAND_DISPLAY": "wayland-9"}, clear=False):
+            self.assertEqual(desktop.session_env()["WAYLAND_DISPLAY"], "wayland-9")
+
+    def test_resolves_dbus_session_bus(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "bus").write_text("")
+            env = {k: v for k, v in desktop.os.environ.items()
+                   if k != "DBUS_SESSION_BUS_ADDRESS"}
+            with mock.patch.dict(desktop.os.environ, env, clear=True), \
+                    mock.patch.dict(desktop.os.environ, {"XDG_RUNTIME_DIR": d}):
+                resolved = desktop.session_env()
+            self.assertEqual(resolved["DBUS_SESSION_BUS_ADDRESS"],
+                             f"unix:path={d}/bus")
+
+    def test_run_passes_the_resolved_env_by_default(self):
+        # A bare run() must carry the session vars, or grim/wtype fail under the
+        # gateway. Assert the env it actually hands to subprocess.
+        with mock.patch.object(desktop.subprocess, "run") as run_mock:
+            run_mock.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+            desktop.run(["true"])
+        passed = run_mock.call_args.kwargs.get("env")
+        self.assertIsNotNone(passed)
+        self.assertIn("XDG_RUNTIME_DIR", passed)
+
+
 if __name__ == "__main__":
     unittest.main()

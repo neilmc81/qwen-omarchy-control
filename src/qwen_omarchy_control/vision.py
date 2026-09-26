@@ -180,7 +180,11 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _driver_env(cfg: dict) -> dict:
-    env = os.environ.copy()
+    # session_env resolves WAYLAND_DISPLAY / HYPRLAND_INSTANCE_SIGNATURE, which
+    # a gateway-spawned server does not inherit but cua-driver needs to reach
+    # the running compositor.
+    from .desktop import session_env
+    env = session_env()
     if cfg.get("enableWayland"):
         env["CUA_DRIVER_RS_ENABLE_WAYLAND"] = "1"
     return env
@@ -670,10 +674,12 @@ def describe_actions(window_hint: str | None = None,
 
 def _notify(summary: str, body: str, urgency: str = "normal") -> None:
     """Best-effort desktop notification. Never raises into the action path."""
+    from .desktop import session_env
     try:
         subprocess.run(
             ["notify-send", "-a", "qwen-voice", "-u", urgency, summary, body],
             capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
+            env=session_env(),
         )
     except (OSError, subprocess.SubprocessError):
         pass
@@ -895,11 +901,12 @@ def click_element(goal: str, window_hint: str | None = None,
 def _double_click() -> str:
     """Two left clicks via ydotool (open an item)."""
     import subprocess
+    from .desktop import session_env
     try:
         proc = subprocess.run(
             ["ydotool", "click", "--repeat", "2", "0xC0"],
             capture_output=True, text=True, timeout=10,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=session_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise VisionError(f"double-click failed: {exc}")
@@ -915,11 +922,12 @@ def _press_key(key: str) -> str:
     this function does not accept free text.
     """
     import subprocess
+    from .desktop import session_env
     try:
         proc = subprocess.run(
             ["wtype", "-k", key],
             capture_output=True, text=True, timeout=10,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=session_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise VisionError(f"key press failed: {exc}")
