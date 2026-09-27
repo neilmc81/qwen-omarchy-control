@@ -41,6 +41,7 @@ the coding backend, which has its own prompts.
 from __future__ import annotations
 
 import json
+import html
 import os
 import urllib.parse
 import re
@@ -437,12 +438,7 @@ def _cdp_endpoint(cfg: dict) -> str:
 
 
 def _cdp_pick_page(cfg: dict):
-    """The page the user most likely means.
-
-    Prefers the tab whose title matches the focused native window (Chrome titles
-    a window "<page title> - Google Chrome"), then any tab, so a request is
-    answered about what is on screen rather than an arbitrary background tab.
-    """
+    """Resolve the visible browser tab, refusing ambiguous background targets."""
     try:
         pages = cdp.list_pages(_cdp_endpoint(cfg))
     except cdp.CdpError as exc:
@@ -452,27 +448,47 @@ def _cdp_pick_page(cfg: dict):
         )
     if not pages:
         raise BrowserError("no browser tabs are open")
+    requested = html.unescape(str(cfg.get("_targetPageTitle") or "")).strip().casefold()
+    if requested:
+        matches = [p for p in pages if html.unescape(p.title).strip().casefold() == requested]
+        if len(matches) == 1:
+            return matches[0]
+        raise BrowserError(f"page title {requested!r} did not identify exactly one tab")
     focused = _focused_geometry() or {}
-    needle = str(focused.get("title") or "").replace(" - Google Chrome", "").strip().lower()
-    if needle:
-        for page in pages:
-            if page.title.strip().lower() == needle:
-                return page
-        for page in pages:
-            if needle and needle[:20] in page.title.lower():
-                return page
-    return pages[0]
+    if _is_browser(str(focused.get("class") or "")):
+        title = str(focused.get("title") or "")
+        needle = re.sub(r" - (Google Chrome|Chromium|Brave|Microsoft Edge)$", "", title,
+                        flags=re.IGNORECASE).strip().lower()
+        exact = [p for p in pages if html.unescape(p.title).strip().lower() == needle]
+        if len(exact) == 1:
+            return exact[0]
+    if len(pages) == 1:
+        return pages[0]
+    raise BrowserError(
+        "multiple browser tabs are open and the intended tab cannot be proven "
+        "from the focused browser window. Focus the target tab or specify it "
+        "through an exact browser binding; no tab was changed."
+    )
 
 
 def _cdp_read(cfg: dict, goal: str | None) -> dict:
     page = _cdp_pick_page(cfg)
     with cdp.PageSession(page) as session:
-        elements, info = cdp.snapshot(session, int(cfg.get("maxElements", 60)))
+        elements, info = cdp.snapshot(session, 300)
+        videos = cdp.visible_video_links(session) if _is_youtube(info.get("url")) else []
+    requested = _normal_title(goal or "")
+    if requested:
+        relevant = [e for e in elements if requested in _normal_title(e.name)]
+        if relevant:
+            elements = relevant
+    limit = int(cfg.get("maxElements", 60))
     return {
         "title": info.get("title"),
         "url": info.get("url"),
         "outline": "",
-        "elements": [e.to_dict() for e in elements],
+        "elements": [e.to_dict() for e in elements[:limit]],
+        "visible_videos": [{"title": v["name"], "href": v["href"]}
+                           for v in videos[:limit]],
         "query": goal,
         "element_count": len(elements),
         "route_used": "cdp_direct",
@@ -486,7 +502,7 @@ def _cdp_select(cfg: dict, page, goal: str, actions: tuple[str, ...]):
     identically whichever transport reads the page.
     """
     with cdp.PageSession(page) as session:
-        elements, _ = cdp.snapshot(session, int(cfg.get("maxElements", 60)))
+        elements, _ = cdp.snapshot(session, 300)
     dicts = [e.to_dict() for e in elements]
     chosen = select_element(dicts, goal, cfg, actions)
     if chosen is None:
@@ -494,6 +510,63 @@ def _cdp_select(cfg: dict, page, goal: str, actions: tuple[str, ...]):
     # Map the chosen dict back to the Element the session can act on.
     by_ref = {e.ref: e for e in elements}
     return by_ref.get(chosen["ref"]), dicts
+
+
+def _normal_title(text: str) -> str:
+    return " ".join(re.findall(r"[\w]+", html.unescape(text or "").casefold()))
+
+
+def _is_youtube(url: str | None) -> bool:
+    host = urllib.parse.urlparse(url or "").hostname or ""
+    return host == "youtube.com" or host.endswith(".youtube.com")
+
+
+def browser_open_visible_video(title: str, cfg: dict | None = None) -> dict:
+    """Open a named video already visible on the current YouTube page.
+
+    Never starts a web search or changes to a different tab. The candidate
+    must be a unique on-viewport watch link whose title contains the user's
+    words; Jev chooses from that grounded set and cannot override the gate.
+    """
+    cfg = dict(cfg or load_config())
+    panic.guard("opening a visible video")
+    requested = _normal_title(title)
+    if len(requested) < 5:
+        raise BrowserError("name more of the visible video title")
+    page = _cdp_pick_page(cfg)
+    if not _is_youtube(page.url):
+        raise BrowserError("the selected browser tab is not YouTube; no web search was started")
+    with cdp.PageSession(page) as session:
+        videos = cdp.visible_video_links(session)
+        matches = [v for v in videos if requested in _normal_title(v["name"])]
+        if not matches:
+            return {"verified": False, "reason": "that title is not visible on the current YouTube page",
+                    "visible_titles": [v["name"] for v in videos[:20]], "searched_web": False}
+        if len(matches) != 1:
+            return {"verified": False, "reason": "more than one visible video matches; name a longer title",
+                    "candidates": [v["name"] for v in matches], "searched_web": False}
+        match = matches[0]
+        # Jev can veto a mismatched candidate; the exact-title gate above
+        # remains authoritative even if a model selects something else.
+        chosen = select_element(matches, title, cfg, CLICK_ACTIONS)
+        if chosen is None or chosen.get("ref") != match["ref"]:
+            return {"verified": False, "reason": "selection did not confirm the visible video",
+                    "candidate": match["name"], "searched_web": False}
+        before = cdp.page_info(session)
+        cdp.click_visible_video(session, match["ref"], match["href"])
+        expected_id = urllib.parse.parse_qs(urllib.parse.urlparse(match["href"]).query).get("v", [None])[0]
+        after = before
+        for _ in range(10):
+            time.sleep(0.2)
+            after = cdp.page_info(session)
+            if urllib.parse.parse_qs(urllib.parse.urlparse(after.get("url") or "").query).get("v", [None])[0] == expected_id:
+                break
+    verified = bool(expected_id and urllib.parse.parse_qs(
+        urllib.parse.urlparse(after.get("url") or "").query).get("v", [None])[0] == expected_id)
+    return {"verified": verified, "title": match["name"], "url_before": before.get("url"),
+            "url_after": after.get("url"), "searched_web": False,
+            "selection": chosen.get("selection"),
+            "reason": "opened the named video" if verified else "click did not open the named video"}
 
 
 def _cdp_click(cfg: dict, goal: str) -> dict:
@@ -554,7 +627,8 @@ def _cdp_click(cfg: dict, goal: str) -> dict:
     return out
 
 
-def _cdp_type(cfg: dict, text: str, goal: str | None, replace: bool) -> dict:
+def _cdp_type(cfg: dict, text: str, goal: str | None, replace: bool,
+              submit: bool = False) -> dict:
     panic.guard("browser typing")
     started = time.monotonic()
     page = _cdp_pick_page(cfg)
@@ -572,17 +646,33 @@ def _cdp_type(cfg: dict, text: str, goal: str | None, replace: bool) -> dict:
                                   actions=list(first.get("actions") or []))
     with cdp.PageSession(page) as session:
         result = cdp.type_into(session, element, text, replace=replace)
+        elements_after, _ = cdp.snapshot(session, int(cfg.get("maxElements", 60)))
+        field_after = next((e for e in elements_after if e.ref == element.ref), None)
+        expected = text if replace else (element.value or "") + text
+        value_verified = field_after is not None and field_after.value == expected
+        before = cdp.page_info(session)
+        if submit and value_verified:
+            cdp.press_enter(session)
+            time.sleep(0.8)
+        after = cdp.page_info(session)
     delivered = int(result.get("delivered_count") or 0)
+    submitted = submit and (before.get("url") != after.get("url")
+                            or before.get("title") != after.get("title"))
+    verified = bool(value_verified and (not submit or submitted))
     out = {
         "field": element.to_dict(),
         "delivered_count": delivered,
         "route": result.get("delivery"),
         "replaced": bool(replace),
-        "verified": delivered > 0,
-        "verification": "satisfied" if delivered else "unknown",
+        "submitted": bool(submitted),
+        "url_after": after.get("url"),
+        "verified": verified,
+        "verification": "satisfied" if verified else "unsatisfied",
         "verification_reason": (
-            f"{delivered} character(s) delivered into {element.name or 'the field'}"
-            if delivered else "no characters were delivered"
+            "submission changed the page" if submitted else
+            "field value matched" if value_verified and not submit else
+            "submission did not change the page" if value_verified else
+            "field value could not be confirmed"
         ),
         "route_used": "cdp_direct",
         "elapsed_s": round(time.monotonic() - started, 2),
@@ -592,7 +682,7 @@ def _cdp_type(cfg: dict, text: str, goal: str | None, replace: bool) -> dict:
         audit.record({
             "tool": "browser_type", "app": "browser", "window": page.title,
             "goal": f"type into {element.name}", "outcome": out["verification"],
-            "verified": delivered > 0, "reason": out["verification_reason"],
+            "verified": verified, "reason": out["verification_reason"],
             "cost_usd": 0.0, "takeover": "background",
         })
     return out
@@ -671,7 +761,7 @@ def _cdp_fallback(fn_name: str, cfg: dict, *args):
         if fn_name == "click":
             return _cdp_click(cfg, args[0])
         if fn_name == "type":
-            return _cdp_type(cfg, args[0], args[1], args[2])
+            return _cdp_type(cfg, args[0], args[1], args[2], args[3])
         if fn_name == "navigate":
             return _cdp_navigate(cfg, args[0])
     except (cdp.CdpError, BrowserError):
@@ -764,15 +854,18 @@ def _compact(sem: dict, cfg: dict) -> dict:
 # --- public API -----------------------------------------------------------
 
 
-def browser_read(goal: str | None = None, cfg: dict | None = None) -> dict:
+def browser_read(goal: str | None = None, cfg: dict | None = None,
+                 page_title: str | None = None) -> dict:
     """Read the browser page as DOM elements (no OCR). Read-only.
 
     With `goal`, a semantic query narrows the result (e.g. "the search box").
     Read-only, so it is allowed while the panic freeze is set.
     """
-    cfg = cfg or load_config()
+    cfg = dict(cfg or load_config())
+    if page_title:
+        cfg["_targetPageTitle"] = page_title
     started = time.monotonic()
-    if cfg.get("useCdpFallback", True) and _multi_window(cfg):
+    if cfg.get("useCdpFallback", True) and (page_title or _multi_window(cfg)):
         out = _cdp_read(cfg, goal)
         out["elapsed_s"] = round(time.monotonic() - started, 2)
         return out
@@ -793,7 +886,7 @@ def browser_read(goal: str | None = None, cfg: dict | None = None) -> dict:
 
 
 def browser_click(goal: str, cfg: dict | None = None,
-                  route: str | None = None) -> dict:
+                  route: str | None = None, page_title: str | None = None) -> dict:
     """Click a page element found by `goal` (role/name), then verify.
 
     Uses the `dom_event` route measured to work here: a synthetic background DOM
@@ -801,10 +894,12 @@ def browser_click(goal: str, cfg: dict | None = None,
     the page (url/title) rather than trusting the dispatch, which the driver
     itself reports as `unverifiable`.
     """
-    cfg = cfg or load_config()
+    cfg = dict(cfg or load_config())
+    if page_title:
+        cfg["_targetPageTitle"] = page_title
     panic.guard("a browser click")
     started = time.monotonic()
-    if cfg.get("useCdpFallback", True) and _multi_window(cfg):
+    if cfg.get("useCdpFallback", True) and (page_title or _multi_window(cfg)):
         return _cdp_click(cfg, goal)
 
     def run(window):
@@ -862,17 +957,26 @@ def browser_click(goal: str, cfg: dict | None = None,
 
 
 def browser_type(text: str, goal: str | None = None, cfg: dict | None = None,
-                 replace: bool = False, submit: bool = False) -> dict:
+                 replace: bool = False, submit: bool = False,
+                 page_title: str | None = None) -> dict:
     """Type text into a page field (found by `goal`), optionally submitting.
 
     HARD RULE: never used for passwords, payment or authentication fields; the
     caller's policy check refuses sensitive text before this is reached.
     """
-    cfg = cfg or load_config()
+    cfg = dict(cfg or load_config())
+    if page_title:
+        cfg["_targetPageTitle"] = page_title
     panic.guard("browser typing")
     started = time.monotonic()
-    if cfg.get("useCdpFallback", True) and _multi_window(cfg):
-        return _cdp_type(cfg, text, goal, replace)
+    if cfg.get("useCdpFallback", True) and (page_title or _multi_window(cfg)):
+        return _cdp_type(cfg, text, goal, replace, submit)
+    if submit:
+        # The Cua browser_type tool inserts text but does not submit. Do not
+        # report a completed workflow when this requested step was skipped.
+        if cfg.get("useCdpFallback", True):
+            return _cdp_type(cfg, text, goal, replace, submit=True)
+        raise BrowserError("submit requires a supported page action; no text was entered")
 
     def run(window):
         target, tab, sem = _bind_and_read(cfg, window, query=goal)
@@ -920,7 +1024,8 @@ def browser_type(text: str, goal: str | None = None, cfg: dict | None = None,
             })
         return out
 
-    return _with_browser(cfg, run, cdp_name="type", cdp_args=(text, goal, replace))
+    return _with_browser(cfg, run, cdp_name="type",
+                         cdp_args=(text, goal, replace, False))
 
 
 def browser_navigate(url: str, cfg: dict | None = None) -> dict:
@@ -980,6 +1085,32 @@ def browser_search(query: str, cfg: dict | None = None) -> dict:
         raise BrowserError("a search query is required")
     if len(query) > 300:
         raise BrowserError("that search query is too long")
+
+    # A voice-model routing error previously searched DuckDuckGo for a title
+    # already visible on YouTube, then opened a different result. Stop before
+    # navigation when the query uniquely identifies a live on-screen video.
+    if cfg.get("useCdpFallback", True):
+        visible = []
+        try:
+            page = _cdp_pick_page(cfg)
+            if _is_youtube(page.url):
+                with cdp.PageSession(page) as session:
+                    visible = cdp.visible_video_links(session)
+        except cdp.CdpError:
+            visible = []
+        except BrowserError as exc:
+            if "could not be reached directly over CDP" not in str(exc):
+                raise
+            # A missing CDP endpoint cannot supply visible-video evidence.
+            visible = []
+        title = _normal_title(query)
+        if visible and len(title) >= 5 and any(title in _normal_title(v["name"])
+                                               for v in visible):
+            raise BrowserError(
+                "that video is already visible on YouTube; use "
+                "browser_open_visible_video with its title instead of "
+                "searching DuckDuckGo. No page was changed."
+            )
 
     engine = str(cfg.get("searchEngine") or "https://duckduckgo.com")
 

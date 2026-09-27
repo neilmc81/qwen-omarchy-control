@@ -192,8 +192,13 @@ class ReadKeyTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self._old = os.environ.pop("OPENROUTER_API_KEY", None)
+        # Isolate the real user config: it may set a different apiKeyEnv, which
+        # would make this test read the operator's actual key file.
+        self._old_cfg = triage.CONFIG_FILE
+        triage.CONFIG_FILE = Path(self._tmp.name) / "triage.json"
 
     def tearDown(self):
+        triage.CONFIG_FILE = self._old_cfg
         if self._old is not None:
             os.environ["OPENROUTER_API_KEY"] = self._old
         self._tmp.cleanup()

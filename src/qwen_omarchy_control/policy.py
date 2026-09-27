@@ -73,6 +73,7 @@ def classify(operation: str) -> str:
         "watch_check",
         "watch_stop",
         "browser_read",
+        "youtube_player_state",
     }:
         return "level1"
     if operation in {
@@ -89,6 +90,8 @@ def classify(operation: str) -> str:
         "macro_record",
         "macro_replay",
         "browser_click",
+        "browser_open_visible_video",
+        "youtube_player_control",
         "browser_type",
         "browser_navigate",
         "browser_search",

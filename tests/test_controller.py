@@ -148,6 +148,18 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(argv, ["hyprctl", "dispatch",
                                 'hl.dsp.cursor.move({ x = "300", y = "400" })'])
 
+    def test_foreground_mouse_announces_before_movement_and_click(self):
+        from qwen_omarchy_control import vision
+        DesktopController._last_input_notice = 0.0
+        events = []
+        with mock.patch.object(vision, "_notify", side_effect=lambda *a: events.append("notice")), \
+                mock.patch.object(desktop, "_dispatch", side_effect=lambda *a: (events.append("move") or (0, ""))), \
+                mock.patch.object(DesktopController, "_ydotool_ready", return_value=True), \
+                mock.patch.object(desktop, "run", side_effect=lambda *a, **k: (events.append("click") or (0, ""))):
+            self.ctrl.pointer_move(300, 400)
+            self.ctrl.mouse_click()
+        self.assertEqual(events, ["notice", "move", "click"])
+
     def test_pointer_move_relative_offsets(self):
         desktop.run.return_value = (0, "10, 20")
         self.ctrl.pointer_move(5, -2, relative=True)
@@ -280,6 +292,20 @@ class FindTextTest(unittest.TestCase):
         self.assertTrue(out["found"])
         # centre of the joined box: x (400+550)/2=475, y (300+320)/2=310
         self.assertEqual((out["x"], out["y"]), (475, 310))
+
+    def test_phrase_box_excludes_other_controls_on_same_line(self):
+        words = [
+            {"text": text, "left": x, "top": 300, "width": 50,
+             "height": 20, "conf": 90.0}
+            for text, x in [("OTHER", 10), ("TARGET", 400), ("BETA", 490)]
+        ]
+        with mock.patch.object(desktop, "hyprctl_json",
+                               return_value=[{"x": 0, "y": 0, "width": 1000,
+                                              "height": 800, "focused": True}]), \
+                mock.patch.object(desktop, "run_bin", return_value=(0, b"png")), \
+                mock.patch.object(desktop, "_ocr_words", return_value=(0, words)):
+            out = self.ctrl.find_text("TARGET BETA")
+        self.assertEqual((out["x"], out["y"]), (470, 310))
 
     def test_capture_is_full_resolution(self):
         # Regression: grim -s 0.75 dropped whole words (measured "TARGET BETA"

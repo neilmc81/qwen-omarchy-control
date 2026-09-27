@@ -11,7 +11,114 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from qwen_omarchy_control import browser, panic
+from qwen_omarchy_control import browser, cdp, panic
+
+
+class DirectCdpTargetTest(unittest.TestCase):
+    def test_ambiguous_tabs_do_not_select_first(self):
+        pages = [cdp.Page("a", "Other", "https://a.test", "ws://a"),
+                 cdp.Page("b", "Wanted", "https://b.test", "ws://b")]
+        with mock.patch.object(cdp, "list_pages", return_value=pages), \
+                mock.patch.object(browser, "_focused_geometry",
+                                  return_value={"class": "foot", "title": "Terminal"}):
+            with self.assertRaisesRegex(browser.BrowserError, "multiple browser tabs"):
+                browser._cdp_pick_page(browser.DEFAULT_CONFIG)
+
+    def test_unique_focused_browser_title_selects_matching_tab(self):
+        pages = [cdp.Page("a", "Other", "https://a.test", "ws://a"),
+                 cdp.Page("b", "Wanted", "https://b.test", "ws://b")]
+        with mock.patch.object(cdp, "list_pages", return_value=pages), \
+                mock.patch.object(browser, "_focused_geometry", return_value={
+                    "class": "google-chrome", "title": "Wanted - Google Chrome"}):
+            self.assertEqual(browser._cdp_pick_page(browser.DEFAULT_CONFIG).id, "b")
+
+    def test_submit_is_not_silently_ignored_without_cdp(self):
+        cfg = dict(browser.DEFAULT_CONFIG, useCdpFallback=False)
+        with self.assertRaisesRegex(browser.BrowserError, "submit requires"):
+            browser.browser_type("hello", "Search", cfg=cfg, submit=True)
+
+    def test_background_type_and_submit_checks_field_and_navigation(self):
+        page = cdp.Page("a", "Form", "https://a.test/form", "ws://a")
+        field = cdp.Element("d0", "textbox", "Search", "", ["click", "type"])
+        filled = cdp.Element("d0", "textbox", "Search", "hello", ["click", "type"])
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        with mock.patch.object(browser, "_cdp_pick_page", return_value=page), \
+                mock.patch.object(browser, "_cdp_select", return_value=(field, [])), \
+                mock.patch.object(cdp, "PageSession", return_value=session), \
+                mock.patch.object(cdp, "type_into", return_value={"delivered_count": 5}), \
+                mock.patch.object(cdp, "snapshot", return_value=([filled], {})), \
+                mock.patch.object(cdp, "page_info", side_effect=[
+                    {"url": page.url, "title": "Form"},
+                    {"url": "https://a.test/results", "title": "Results"}]), \
+                mock.patch.object(cdp, "press_enter") as enter, \
+                mock.patch("time.sleep"):
+            out = browser._cdp_type(dict(browser.DEFAULT_CONFIG, audit=False),
+                                    "hello", "Search", True, submit=True)
+        enter.assert_called_once_with(session)
+        self.assertTrue(out["submitted"])
+        self.assertTrue(out["verified"])
+
+
+class VisibleVideoTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = dict(browser.DEFAULT_CONFIG, audit=False)
+        self.page = cdp.Page("tab", "YouTube", "https://www.youtube.com/", "ws://tab")
+        self.videos = [
+            {"ref": "v0", "role": "link", "name": "The Exact Video Title",
+             "href": "https://www.youtube.com/watch?v=correct", "actions": ["click"]},
+            {"ref": "v1", "role": "link", "name": "A Different Video Title",
+             "href": "https://www.youtube.com/watch?v=wrong", "actions": ["click"]},
+        ]
+
+    def test_missing_video_never_searches_or_clicks(self):
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        with mock.patch.object(browser, "_cdp_pick_page", return_value=self.page), \
+                mock.patch.object(cdp, "PageSession", return_value=session), \
+                mock.patch.object(cdp, "visible_video_links", return_value=self.videos), \
+                mock.patch.object(cdp, "click_visible_video") as click:
+            out = browser.browser_open_visible_video("not here", self.cfg)
+        self.assertFalse(out["verified"])
+        self.assertFalse(out["searched_web"])
+        click.assert_not_called()
+
+    def test_exact_visible_title_opens_only_matching_watch_id(self):
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        with mock.patch.object(browser, "_cdp_pick_page", return_value=self.page), \
+                mock.patch.object(cdp, "PageSession", return_value=session), \
+                mock.patch.object(cdp, "visible_video_links", return_value=self.videos), \
+                mock.patch.object(browser, "select_element",
+                                  return_value=dict(self.videos[0], selection="jev")), \
+                mock.patch.object(cdp, "page_info", side_effect=[
+                    {"url": self.page.url},
+                    {"url": "https://www.youtube.com/watch?v=correct"}]), \
+                mock.patch.object(cdp, "click_visible_video") as click, \
+                mock.patch("time.sleep"):
+            out = browser.browser_open_visible_video("Exact Video Title", self.cfg)
+        click.assert_called_once_with(session, "v0", self.videos[0]["href"])
+        self.assertTrue(out["verified"])
+        self.assertEqual(out["selection"], "jev")
+
+    def test_web_search_refuses_visible_video_title_before_navigation(self):
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        with mock.patch.object(browser, "_cdp_pick_page", return_value=self.page), \
+                mock.patch.object(cdp, "PageSession", return_value=session), \
+                mock.patch.object(cdp, "visible_video_links", return_value=self.videos), \
+                mock.patch.object(browser, "browser_navigate") as navigate:
+            with self.assertRaisesRegex(browser.BrowserError, "already visible"):
+                browser.browser_search("The Exact Video Title", self.cfg)
+        navigate.assert_not_called()
+
+    def test_web_search_does_not_hide_ambiguous_tab_target(self):
+        with mock.patch.object(browser, "_cdp_pick_page",
+                               side_effect=browser.BrowserError("multiple browser tabs are open")), \
+                mock.patch.object(browser, "browser_navigate") as navigate:
+            with self.assertRaisesRegex(browser.BrowserError, "multiple browser tabs"):
+                browser.browser_search("ordinary query", self.cfg)
+        navigate.assert_not_called()
 
 
 def sem_snapshot(refs, url="https://example.com/", title="Example Domain"):

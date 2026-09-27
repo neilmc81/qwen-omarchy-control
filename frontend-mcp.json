@@ -109,6 +109,18 @@
           "enabled": true,
           "description": "Click a link/button on the current browser page by name, through the browser's own DOM. No OCR and no pointer movement - it runs in the background, so no takeover announcement is needed. Use this instead of click_element for anything inside Chrome. Verifies URL/title and reports verified honestly."
         },
+        "browser_open_visible_video": {
+          "enabled": true,
+          "description": "Play a named video already visible on the current YouTube page. Matches the live video title, Jev confirms the selection, clicks and verifies the exact watch URL. Never searches the web or opens another title; reports visible titles if absent."
+        },
+        "youtube_player_state": {
+          "enabled": true,
+          "description": "Read the open YouTube watch player's play/pause, time, volume, speed, fullscreen, captions, theater and autoplay state. Read-only."
+        },
+        "youtube_player_control": {
+          "enabled": true,
+          "description": "Control the open YouTube player: play, pause, skip backward/forward, seek, restart, player volume/mute, speed, fullscreen, captions, theater, autoplay or next video. Verifies player state; background, no mouse movement."
+        },
         "browser_type": {
           "enabled": true,
           "description": "Type text into a field on the current browser page, found by name (or the only text field). No pointer movement. Use for search boxes and ordinary forms; NEVER for password, payment or authentication fields."
@@ -119,7 +131,7 @@
         },
         "browser_search": {
           "enabled": true,
-          "description": "Search the web and land on the results page in one step: navigates, types the query, submits, and verifies the results loaded. Prefer this over driving a search engine manually. Use for 'look up X', 'search for X', 'google X'."
+          "description": "General web lookup only: navigate to search results and verify they loaded. Never use to play a video already visible on YouTube; use browser_open_visible_video."
         },
         "click_element": {
           "enabled": true,
@@ -188,6 +200,88 @@
         "watch_stop": {
           "enabled": true,
           "description": "Stop a watch job."
+        }
+      }
+    },
+    "marketos": {
+      "enabled": true,
+      "transport": {
+        "type": "stdio",
+        "command": "/home/neil/Projects/MarketOS/omarchy/marketos-mcp",
+        "args": [],
+        "env": {
+          "MARKETOS_API_URL": "http://127.0.0.1:8765"
+        },
+        "cwd": "/home/neil/Projects/MarketOS"
+      },
+      "tools": {
+        "market_status": {
+          "enabled": true,
+          "description": "Current MarketOS market snapshot: NQ, ES, yields, dollar, VIX and the next major event. Use for 'what's happening with NQ?', 'how's the market?'. Read-only, never triggers analysis."
+        },
+        "market_brief": {
+          "enabled": true,
+          "description": "A prepared concise MarketOS briefing from existing state and the latest stored analysis. Use for 'give me the market brief', 'catch me up'. Never starts a new analysis."
+        },
+        "market_next_event": {
+          "enabled": true,
+          "description": "The next important economic event (CPI, NFP, FOMC) with New York time and, when available, consensus and previous. Use for 'what's next?', 'when is CPI?'. Never invents consensus."
+        },
+        "market_calendar": {
+          "enabled": true,
+          "description": "Economic calendar events, prioritising critical and high importance. Use for 'what's on the calendar today?', 'what's important this week?'."
+        },
+        "market_macro": {
+          "enabled": true,
+          "description": "Latest macro readings (CPI, employment, growth, policy). Use for 'what's the macro picture?', 'what was the latest CPI?'. Optional series filter e.g. 'CPI'."
+        },
+        "market_technical": {
+          "enabled": true,
+          "description": "Deterministic NQ technical state: price, VWAP position, overnight and previous levels, structure, opening range, ATR, NQ-versus-ES. Use for 'what's the technical picture?', 'where are we versus VWAP?'. Read-only."
+        },
+        "market_latest_events": {
+          "enabled": true,
+          "description": "Important market and geopolitical events MarketOS has ranked as material. Use for 'any important news?', 'what just happened?'. Not a raw feed."
+        },
+        "market_latest_analysis": {
+          "enabled": true,
+          "description": "The latest stored MarketOS analyst result, preferring synthesis. Use for 'what's the latest analysis?', 'what does MarketOS think?'."
+        },
+        "market_event_analysis": {
+          "enabled": true,
+          "description": "MarketOS analyses stored for one event. Pass an event_id when known, otherwise a short descriptor of the recent event and MarketOS resolves it. Use for 'explain that CPI release'. Never invents an event."
+        },
+        "market_usage": {
+          "enabled": true,
+          "description": "MarketOS reasoning usage and estimated cost (decisions plus analysis) for the trailing window. Use for 'what is MarketOS costing me today?'. Separate from voice billing."
+        },
+        "open_marketos": {
+          "enabled": true,
+          "description": "Open or focus the MarketOS workstation at a page: overview, macro, calendar, technical, news, analysts. Use for 'open MarketOS', 'open technicals', 'show me today's calendar'. Focuses an existing window rather than duplicating it."
+        },
+        "market_latest_briefing": {
+          "enabled": true,
+          "description": "A prepared MarketOS briefing already produced by the workflow layer (pre-market, event preview, post-release recap, FOMC reaction, context change, session recap). Use for 'give me the morning brief', 'give me the latest briefing', 'what happened after the Fed?', 'give me the session recap'. Retrieves an existing briefing; never starts new analysis."
+        },
+        "market_history_query": {
+          "enabled": true,
+          "description": "A descriptive historical statistic from MarketOS's own stored outcomes: how NQ behaved after comparable past events. Use for 'how has NQ behaved after hot CPI releases?', 'when yields jump after CPI what usually happens?'. Returns a sample size and median moves; never a trading recommendation, never a prediction."
+        },
+        "market_materiality_calibration": {
+          "enabled": true,
+          "description": "How MarketOS's own materiality levels have behaved historically: sample size and median absolute move per level. Use for 'how have HIGH materiality events behaved?'. Descriptive only."
+        },
+        "market_fomc_history": {
+          "enabled": true,
+          "description": "Historical FOMC behaviour: how the initial statement move behaved afterwards, with sample size. Use for 'how often does the initial FOMC move reverse?'. Statement and press-conference stages are measured separately."
+        },
+        "market_similar_cases": {
+          "enabled": true,
+          "description": "Deterministic historical-similarity search: which past MarketOS anchors most resemble the current market context, with each match's later NQ outcome. Use for 'find situations similar to the current market', 'have we seen this kind of CPI setup before?', 'what happened in similar cases?'. The match is computed by code, never guessed; outcomes are context, not a prediction."
+        },
+        "market_calibration_review": {
+          "enabled": true,
+          "description": "Whether MarketOS recommends reviewing any of its own thresholds, from deterministic calibration statistics. Use for 'does MarketOS recommend reviewing anything?', 'show calibration issues', 'is any threshold miscalibrated?'. Recommendations are for a human and no change is ever applied automatically."
         }
       }
     }

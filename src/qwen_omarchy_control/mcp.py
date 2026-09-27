@@ -16,7 +16,7 @@ import traceback
 import uuid
 
 from . import (browser, macros, outcome, panic, sequence, task, triage, vision,
-               watch)
+               watch, youtube)
 from .desktop import DesktopController, DesktopError
 from .policy import PolicyError, reject_sensitive_text
 PROTOCOL_VERSION = "2025-06-18"
@@ -386,8 +386,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "goal": {"type": "string",
-                         "description": "What you are looking for on the page, e.g. "
-                                        "'the search box' or 'the Download link'."},
+                          "description": "What you are looking for on the page, e.g. "
+                                         "'the search box' or 'the Download link'."},
+                "page_title": {"type": "string", "description":
+                               "Exact browser tab title for background work when another app is focused."},
             },
             "additionalProperties": False,
         },
@@ -405,12 +407,58 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "goal": {"type": "string",
-                         "description": "What to click, e.g. 'the Download link' "
-                                        "or 'Sign in'."},
+                          "description": "What to click, e.g. 'the Download link' "
+                                         "or 'Sign in'."},
+                "page_title": {"type": "string", "description":
+                               "Exact browser tab title for background work."},
             },
             "required": ["goal"],
             "additionalProperties": False,
         },
+    },
+    {
+        "name": "browser_open_visible_video",
+        "description": "Play a named video already visible on the current YouTube page. "
+                       "Read live on-screen video titles, use Jev to confirm the "
+                       "exact matching link, click it in the background, and verify "
+                       "the watch URL. NEVER searches DuckDuckGo or opens a different "
+                       "title. If the requested video is not on this page, returns "
+                       "visible titles without acting. Level 2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"title": {"type": "string", "description":
+                                    "Name or distinctive words from the visible video title."}},
+            "required": ["title"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "youtube_player_state",
+        "description": "Read the open YouTube watch player's playback, time, volume, mute, "
+                       "speed, fullscreen, captions, theater and autoplay state. "
+                       "Read-only. If several videos are open, supply an exact page_title. Level 1.",
+        "inputSchema": {"type": "object", "properties": {
+            "page_title": {"type": "string", "description": "Exact YouTube tab title when ambiguous."},
+        }, "additionalProperties": False},
+    },
+    {
+        "name": "youtube_player_control",
+        "description": "Control the already-open YouTube watch player in the background and "
+                       "verify its actual state. Use for play/pause, skip back/forward, "
+                       "volume/mute, fullscreen, captions, speed, theater, autoplay "
+                       "or next video. Never use browser_search for player controls. "
+                       "One watch tab is selected only when unique or exactly identified. Level 2.",
+        "inputSchema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": [
+                "play", "pause", "seek_backward", "seek_forward", "seek_to", "restart",
+                "volume_up", "volume_down", "volume_set", "mute", "unmute", "speed",
+                "fullscreen_on", "fullscreen_off", "captions_on", "captions_off",
+                "theater_on", "theater_off", "autoplay_on", "autoplay_off", "next"]},
+            "amount": {"type": "number", "description": "Seconds for seek, percentage points "
+                       "for volume (default step 10); required position for seek_to, "
+                       "percent for volume_set, or multiplier for speed (0.25–2)."},
+            "page_title": {"type": "string", "description": "Exact YouTube tab title when ambiguous."},
+        }, "required": ["action"], "additionalProperties": False},
     },
     {
         "name": "browser_type",
@@ -426,8 +474,12 @@ TOOLS = [
                          "description": "Which field, e.g. 'the search box'. Omit "
                                         "for the page's only text field."},
                 "replace": {"type": "boolean", "default": False,
-                            "description": "True to replace the field's current "
-                                           "contents instead of appending."},
+                             "description": "True to replace the field's current "
+                                            "contents instead of appending."},
+                "submit": {"type": "boolean", "default": False,
+                           "description": "Press Enter after typing and verify the page changed."},
+                "page_title": {"type": "string", "description":
+                               "Exact browser tab title for background work."},
             },
             "required": ["text"],
             "additionalProperties": False,
@@ -603,8 +655,9 @@ TOOLS = [
         "description": "Search the web and land on the results page, in one step. "
                        "Prefer this over opening a search engine and driving it "
                        "manually: it navigates, types the query, submits, and "
-                       "verifies the results page actually loaded. Use for 'look "
-                       "up X', 'search for X', 'google X'. Level 2.",
+                       "verifies the results page actually loaded. Use only for "
+                       "a general web lookup, never to play a video already "
+                       "on YouTube; use browser_open_visible_video for that. Level 2.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -637,7 +690,7 @@ class McpHandler:
         "get_active_window", "list_windows", "list_workspaces", "get_monitors",
         "get_audio_status", "get_system_status", "read_window", "read_screen",
         "find_element", "find_text", "describe_actions", "describe_outcome",
-        "browser_read", "watch_start", "watch_check", "watch_stop",
+        "browser_read", "youtube_player_state", "watch_start", "watch_check", "watch_stop",
     })
 
     def __init__(self) -> None:
@@ -861,9 +914,19 @@ class McpHandler:
         if name == "browser_read":
             return browser.browser_read(
                 str(args["goal"]) if args.get("goal") else None,
+                page_title=str(args["page_title"]) if args.get("page_title") else None,
             )
         if name == "browser_click":
-            return browser.browser_click(str(args["goal"]))
+            return browser.browser_click(
+                str(args["goal"]),
+                page_title=str(args["page_title"]) if args.get("page_title") else None)
+        if name == "browser_open_visible_video":
+            return browser.browser_open_visible_video(str(args["title"]))
+        if name == "youtube_player_state":
+            return youtube.player_state(page_title=args.get("page_title"))
+        if name == "youtube_player_control":
+            return youtube.player_control(str(args["action"]), args.get("amount"),
+                                          page_title=args.get("page_title"))
         if name == "browser_type":
             text = str(args.get("text") or "")
             if reject_sensitive_text(text):
@@ -875,6 +938,8 @@ class McpHandler:
                 text,
                 goal=str(args["goal"]) if args.get("goal") else None,
                 replace=bool(args.get("replace", False)),
+                submit=bool(args.get("submit", False)),
+                page_title=str(args["page_title"]) if args.get("page_title") else None,
             )
         if name == "browser_navigate":
             return browser.browser_navigate(str(args["url"]))

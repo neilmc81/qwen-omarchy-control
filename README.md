@@ -247,7 +247,7 @@ The three surfaces for MarketOS tools:
 1. **The MCP server** — `core/interfaces/mcp/server.py` in the MarketOS repo,
    launched by `omarchy/marketos-mcp`. Stdlib only; read-only.
 2. **The frontend allowlist** — the `marketos` entry in `frontend-mcp.json`
-   (11 tools).
+   (12 tools).
 3. **The routing rules** — the `# MarketOS` section of
    `~/.config/qwaudio/frontend-agent/PROMPT.md` (tracked in
    `share/prompt.example.md`).
@@ -481,11 +481,22 @@ DevTools endpoint (CDP) and address real DOM elements. Five tools use it:
 - **`browser_click`** — click a link/button **by name**, through the DOM. No OCR
   and **no mouse movement**: it runs in the background, so no takeover
   announcement is needed. It verifies the page actually changed.
+- **`browser_open_visible_video`** — play a uniquely named video already visible
+  on the current YouTube page. It reads the real watch links beyond the browser
+  navigation controls, asks Jev to confirm the grounded match, and verifies the
+  exact watch ID. An absent/ambiguous title returns candidates without searching
+  the web or clicking a different result.
+- **`youtube_player_state` / `youtube_player_control`** — read or control the
+  uniquely identified open watch-page player: play/pause, seek/restart, player
+  volume/mute, speed, fullscreen, captions, theater, autoplay and next video.
+  Controls are background browser actions and report success only after player
+  state or the next video's ID is read back.
 - **`browser_type`** — fill an ordinary field, found by name. NEVER for
   passwords, payment or authentication fields.
 - **`browser_navigate`** — change the current tab's page.
 - **`browser_search`** — the goal-level action: search the web in one call
-  (navigate → type → submit → verify). Use it for "look up X".
+  (navigate → verify). Use it for general web lookups, not a video already on
+  YouTube. A query matching a visible video title refuses before navigation.
 
 ### Enabling it
 

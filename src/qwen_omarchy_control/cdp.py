@@ -302,6 +302,64 @@ def page_info(session: PageSession, live: bool = True) -> dict:
     return {"title": session.page.title, "url": session.page.url}
 
 
+_VISIBLE_VIDEO_JS = r"""
+(() => {
+  window.__qwen_video_refs = [];
+  const seen = new Set(), out = [];
+  for (const el of document.querySelectorAll('a[href*="/watch?"]')) {
+    const name = (el.textContent || '').trim().replace(/\s+/g, ' ');
+    const href = el.href;
+    const r = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    if (!name || !href || seen.has(href) ||
+        r.width < 20 || r.height < 10 ||
+        r.bottom <= 0 || r.top >= innerHeight ||
+        r.right <= 0 || r.left >= innerWidth ||
+        style.display === 'none' || style.visibility === 'hidden') continue;
+    // Thumbnail duration badges are links too; only a descriptive title counts.
+    if (name.length < 8 || /^\d+(?::\d+)+$/.test(name)) continue;
+    seen.add(href);
+    window.__qwen_video_refs.push(el);
+    out.push({ref:'v' + (window.__qwen_video_refs.length - 1),
+              role:'link', name:name.slice(0, 160), href,
+              actions:['click']});
+    if (out.length >= 100) break;
+  }
+  return JSON.stringify(out);
+})()
+"""
+
+
+def visible_video_links(session: PageSession) -> list[dict]:
+    """YouTube watch links with visible, descriptive titles in this viewport."""
+    result = session.call("Runtime.evaluate", {
+        "expression": _VISIBLE_VIDEO_JS, "returnByValue": True,
+    })
+    raw = (result.get("result") or {}).get("value")
+    if not isinstance(raw, str):
+        raise CdpError("video list could not be read")
+    return json.loads(raw)
+
+
+def click_visible_video(session: PageSession, ref: str, expected_href: str) -> None:
+    """Recheck the chosen live title link before a background DOM click."""
+    index = int(ref[1:]) if ref.startswith("v") and ref[1:].isdigit() else -1
+    if index < 0:
+        raise CdpError("invalid video reference")
+    result = session.call("Runtime.evaluate", {
+        "expression": (
+            "(() => { const el = (window.__qwen_video_refs || [])[" + str(index) + "];"
+            " if (!el || !el.isConnected || el.href !== " + json.dumps(expected_href) +
+            ") return false; const r = el.getBoundingClientRect();"
+            " if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 ||"
+            " r.left >= innerWidth) return false; el.click(); return true; })()"
+        ),
+        "returnByValue": True, "userGesture": True,
+    })
+    if (result.get("result") or {}).get("value") is not True:
+        raise CdpError("the selected video is no longer visible; no click was sent")
+
+
 # --- actions ----------------------------------------------------------------
 
 

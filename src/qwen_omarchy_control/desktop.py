@@ -366,6 +366,19 @@ class DesktopController:
         return f"moved active window to workspace {num}{mark}"
 
     # ------------------------------------------------------------------- mouse
+    _last_input_notice = 0.0
+
+    @classmethod
+    def _announce_input(cls) -> None:
+        """Notify before taking the real pointer; coalesce a click sequence."""
+        now = time.monotonic()
+        if now - cls._last_input_notice < 15:
+            return
+        from .vision import _notify
+        _notify("Assistant taking foreground control",
+                "The assistant will move the mouse or send input on your desktop.")
+        cls._last_input_notice = now
+
     @staticmethod
     def _ydotool_socket() -> str:
         return (os.environ.get("YDOTOOL_SOCKET")
@@ -390,6 +403,7 @@ class DesktopController:
             except ValueError:
                 raise _fail("could not parse the current pointer position")
             nx, ny = cx + nx, cy + ny
+        self._announce_input()
         rc, out = _dispatch(_lua_call("cursor.move", x=str(nx), y=str(ny)))
         if rc != 0:
             raise _fail(f"could not move the pointer: {out}")
@@ -403,6 +417,7 @@ class DesktopController:
             raise _fail(f"button must be one of {', '.join(YDOTOOL_BUTTONS)}")
         if not self._ydotool_ready():
             raise _fail(YDOTOOL_UNAVAILABLE)
+        self._announce_input()
         argv = ["ydotool", "click"]
         if double:
             argv += ["--repeat", "2"]
@@ -822,19 +837,28 @@ class DesktopController:
             if target_lower in w["text"].lower():
                 matches.append(self._word_match(w, origin_x, origin_y))
 
-        # 2) Phrase matches: join words that share a text line into one box,
-        #    then look for the needle across the joined text. This is what makes
-        #    "TARGET BETA" (two OCR words) findable.
+        # 2) Match only the consecutive words comprising a phrase. Bounding
+        #    the entire line can put the click far outside the named target
+        #    when several links or video cards share a row.
         for line in self._lines(words):
-            joined = " ".join(w["text"] for w in line).lower()
-            if target_lower in joined:
-                left = min(w["left"] for w in line)
-                top = min(w["top"] for w in line)
-                right = max(w["left"] + w["width"] for w in line)
-                bottom = max(w["top"] + w["height"] for w in line)
-                conf = sum(w["conf"] for w in line) / len(line)
+            count = len(needle.split())
+            if count < 2:
+                continue
+            for start in range(len(line) - count + 1):
+                phrase = line[start:start + count]
+                if " ".join(w["text"] for w in phrase).lower() != target_lower:
+                    continue
+                if any(b["left"] - (a["left"] + a["width"]) >
+                       2 * max(a["height"], b["height"])
+                       for a, b in zip(phrase, phrase[1:])):
+                    continue
+                left = min(w["left"] for w in phrase)
+                top = min(w["top"] for w in phrase)
+                right = max(w["left"] + w["width"] for w in phrase)
+                bottom = max(w["top"] + w["height"] for w in phrase)
+                conf = sum(w["conf"] for w in phrase) / len(phrase)
                 matches.append({
-                    "text": " ".join(w["text"] for w in line),
+                    "text": " ".join(w["text"] for w in phrase),
                     "x": int(round((left + right) / 2 + origin_x)),
                     "y": int(round((top + bottom) / 2 + origin_y)),
                     "confidence": round(conf, 1),

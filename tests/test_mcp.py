@@ -33,9 +33,33 @@ class McpHandshakeTest(unittest.TestCase):
         names = {t["name"] for t in res["result"]["tools"]}
         self.assertIn("switch_workspace", names)
         self.assertIn("type_text", names)  # window-targeted, Level 2
+        self.assertIn("browser_open_visible_video", names)
+        self.assertIn("youtube_player_state", names)
+        self.assertIn("youtube_player_control", names)
         self.assertNotIn("run_shell", names)
         for tool in res["result"]["tools"]:
             self.assertTrue(tool["inputSchema"]["type"] == "object")
+
+    def test_visible_video_tool_reaches_browser_without_web_search(self):
+        h = mcp.McpHandler()
+        with mock.patch("qwen_omarchy_control.browser.browser_open_visible_video",
+                        return_value={"verified": False, "searched_web": False}) as open_video, \
+                mock.patch("qwen_omarchy_control.browser.browser_search") as search:
+            res = call(h, "tools/call", {"name": "browser_open_visible_video",
+                                          "arguments": {"title": "The Exact Video Title"}})
+        self.assertFalse(res["result"]["isError"])
+        open_video.assert_called_once_with("The Exact Video Title")
+        search.assert_not_called()
+
+    def test_youtube_player_tool_dispatches_action_and_amount(self):
+        h = mcp.McpHandler()
+        with mock.patch("qwen_omarchy_control.youtube.player_control",
+                        return_value={"verified": True}) as control:
+            res = call(h, "tools/call", {"name": "youtube_player_control",
+                                          "arguments": {"action": "seek_backward",
+                                                        "amount": 15}})
+        self.assertFalse(res["result"]["isError"])
+        control.assert_called_once_with("seek_backward", 15, page_title=None)
 
     def test_unknown_tool_errors(self):
         h = mcp.McpHandler()

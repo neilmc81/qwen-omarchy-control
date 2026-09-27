@@ -61,13 +61,18 @@ Checked live on this machine, not from docs:
 ## Done
 
 ### Phase 9 — MarketOS voice interface — DONE (2026-09-21)
-A second frontend MCP server, `marketos`, exposes 11 read-only tools over the
+A second frontend MCP server, `marketos`, exposes 12 read-only tools over the
 MarketOS loopback API (`market_status`, `market_brief`, `market_next_event`,
 `market_calendar`, `market_macro`, `market_technical`, `market_latest_events`,
-`market_latest_analysis`, `market_event_analysis`, `market_usage`,
-`open_marketos`). The server lives in the MarketOS repo
+`market_latest_analysis`, `market_event_analysis`, `market_latest_briefing`,
+`market_usage`, `open_marketos`). The server lives in the MarketOS repo
 (`core/interfaces/mcp/`, launcher `omarchy/marketos-mcp`); this project only
 registers it and routes to it.
+
+Phase 10 (in MarketOS) added `market_latest_briefing`, which retrieves a
+prepared, stored briefing ("give me the morning brief", "what happened after the
+Fed?", "give me the session recap"). It is retrieval only — it never starts a
+new analysis.
 
 - Qwen is ears + routing + presentation; MarketOS is the market brain. Tools
   return a `spoken` string and a `stale` flag so the model cannot invent or
