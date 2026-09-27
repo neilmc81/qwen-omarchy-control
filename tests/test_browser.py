@@ -32,6 +32,51 @@ class DirectCdpTargetTest(unittest.TestCase):
                     "class": "google-chrome", "title": "Wanted - Google Chrome"}):
             self.assertEqual(browser._cdp_pick_page(browser.DEFAULT_CONFIG).id, "b")
 
+    def test_unique_title_fragment_selects_tab_and_duplicate_refuses(self):
+        pages = [cdp.Page("a", "The Video - YouTube", "https://www.youtube.com/watch?v=a", "ws://a"),
+                 cdp.Page("b", "Other", "https://other.test", "ws://b")]
+        cfg = dict(browser.DEFAULT_CONFIG, _targetPageTitle="YouTube")
+        with mock.patch.object(cdp, "list_pages", return_value=pages):
+            self.assertEqual(browser._cdp_pick_page(cfg).id, "a")
+        pages.append(cdp.Page("c", "Another - YouTube", "https://www.youtube.com/watch?v=c", "ws://c"))
+        with mock.patch.object(cdp, "list_pages", return_value=pages):
+            with self.assertRaisesRegex(browser.BrowserError, "available titles"):
+                browser._cdp_pick_page(cfg)
+
+    def test_video_route_selects_unique_youtube_among_unrelated_tabs(self):
+        pages = [cdp.Page("a", "YouTube", "https://www.youtube.com/", "ws://a"),
+                 cdp.Page("b", "New Tab", "chrome://newtab/", "ws://b")]
+        with mock.patch.object(cdp, "list_pages", return_value=pages), \
+                mock.patch.object(browser, "_focused_geometry", return_value={"class": "foot"}):
+            self.assertEqual(browser._cdp_pick_youtube_page(browser.DEFAULT_CONFIG).id, "a")
+            self.assertEqual(len(browser.browser_tabs(browser.DEFAULT_CONFIG)["tabs"]), 2)
+
+    def test_search_guard_allows_non_youtube_tabs(self):
+        page = cdp.Page("a", "Example Domain", "https://example.com/", "ws://a")
+        with mock.patch.object(cdp, "list_pages", return_value=[page]), \
+                mock.patch.object(browser, "_focused_geometry", return_value={"class": "foot"}):
+            self.assertIsNone(browser._cdp_pick_youtube_page(browser.DEFAULT_CONFIG,
+                                                               allow_missing=True))
+
+    def test_navigation_and_search_require_requested_destination(self):
+        self.assertFalse(browser._url_reached("https://duckduckgo.com/?q=correct",
+                                               "https://duckduckgo.com/?q=wrong"))
+        self.assertTrue(browser._url_reached("https://duckduckgo.com/?q=a+b",
+                                              "https://www.duckduckgo.com/?q=a%20b&tracking=1"))
+        self.assertFalse(browser._search_result_reached("https://duckduckgo.com",
+                                                        "correct", "https://duckduckgo.com/?q=wrong"))
+
+    def test_cua_binding_does_not_choose_first_unknown_tab(self):
+        cfg = dict(browser.DEFAULT_CONFIG)
+        window = {"pid": 7, "window_id": 9}
+        state = {"target_id": "target", "tabs": [
+            {"tab_id": "a", "active": None}, {"tab_id": "b", "active": None}]}
+        with mock.patch.object(browser, "_state", return_value=state):
+            with self.assertRaisesRegex(browser.BrowserError, "ambiguous"):
+                browser._pair(cfg, window)
+            with self.assertRaisesRegex(browser.BrowserError, "ambiguous"):
+                browser._bind_and_read(cfg, window)
+
     def test_submit_is_not_silently_ignored_without_cdp(self):
         cfg = dict(browser.DEFAULT_CONFIG, useCdpFallback=False)
         with self.assertRaisesRegex(browser.BrowserError, "submit requires"):
@@ -115,8 +160,11 @@ class VisibleVideoTest(unittest.TestCase):
     def test_web_search_does_not_hide_ambiguous_tab_target(self):
         with mock.patch.object(browser, "_cdp_pick_page",
                                side_effect=browser.BrowserError("multiple browser tabs are open")), \
+                mock.patch.object(cdp, "list_pages", return_value=[
+                    self.page, cdp.Page("other", "Other YouTube",
+                                        "https://www.youtube.com/watch?v=other", "ws://other")]), \
                 mock.patch.object(browser, "browser_navigate") as navigate:
-            with self.assertRaisesRegex(browser.BrowserError, "multiple browser tabs"):
+            with self.assertRaisesRegex(browser.BrowserError, "YouTube tab is ambiguous"):
                 browser.browser_search("ordinary query", self.cfg)
         navigate.assert_not_called()
 
@@ -315,7 +363,7 @@ class BrowserActionTest(unittest.TestCase):
         self.assertEqual(click[0]["tab_id"], "tab-1")
         self.assertEqual(click[0]["ref"], "p1:0")
         self.assertEqual(click[0]["input_route"], "dom_event")
-        self.assertEqual(result["verification"], "unsatisfied")
+        self.assertEqual(result["verification"], "unknown")
 
     def test_click_verifies_a_url_change(self):
         calls = []
@@ -345,6 +393,34 @@ class BrowserActionTest(unittest.TestCase):
         self.assertTrue(result["verified"])
         self.assertEqual(result["verification"], "satisfied")
         self.assertIn("iana.org", result["url_after"])
+
+    def test_click_does_not_verify_wrong_expected_url(self):
+        calls = []
+        with mock.patch.object(browser, "_bind_candidates",
+                               return_value=[{"pid": 9, "window_id": 2}]), \
+                mock.patch.object(browser, "_run_driver", side_effect=self._driver(calls)), \
+                mock.patch.object(browser, "_debug_port_for", return_value=9222), \
+                mock.patch("time.sleep"):
+            result = browser.browser_click("Learn more", cfg=self.cfg,
+                                           expected_url="https://www.iana.org/")
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["verification"], "unsatisfied")
+
+    def test_cdp_click_verifies_new_page_text(self):
+        page = cdp.Page("a", "Form", "https://example.test/", "ws://a")
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        element = cdp.Element("d0", "button", "Show details", actions=["click"])
+        with mock.patch.object(browser, "_cdp_pick_page", return_value=page), \
+                mock.patch.object(browser, "_cdp_select", return_value=(element, [])), \
+                mock.patch.object(cdp, "PageSession", return_value=session), \
+                mock.patch.object(cdp, "page_info", return_value={"url": page.url, "title": page.title}), \
+                mock.patch.object(cdp, "page_contains_text", side_effect=[False, True]), \
+                mock.patch.object(cdp, "click_element", return_value={"delivery": "dom"}), \
+                mock.patch("time.sleep"):
+            result = browser._cdp_click(dict(self.cfg, audit=False), "Show details",
+                                        expected_text="Details are ready")
+        self.assertTrue(result["verified"])
 
     def test_type_reports_delivered_count(self):
         calls = []
@@ -451,7 +527,7 @@ class BrowserSearchTest(unittest.TestCase):
         # Default behaviour: a search is a URL, like a bookmark. This is the
         # reliable route and needs no clicking.
         with mock.patch.object(browser, "browser_navigate",
-                               return_value={"url_after": "https://ddg.test/?q=x",
+                               return_value={"url_after": "https://duckduckgo.com/?q=x+y",
                                              "title_after": "x at DuckDuckGo",
                                              "route_used": "cua"}) as nav:
             result = browser.browser_search("x y", cfg=self.cfg)
@@ -469,9 +545,9 @@ class BrowserSearchTest(unittest.TestCase):
                                   return_value={"verified": True,
                                                 "field": {"name": "Search"}}), \
                 mock.patch.object(browser, "browser_click",
-                                  return_value={"verified": True,
-                                                "url_after": "https://ddg.test/?q=x",
-                                                "title_after": "x at DuckDuckGo"}):
+                                   return_value={"verified": True,
+                                                 "url_after": "https://duckduckgo.com/?q=x",
+                                                 "title_after": "x at DuckDuckGo"}):
             result = browser.browser_search("x", cfg=self.cfg)
         self.assertTrue(result["verified"])
         self.assertEqual([s["step"] for s in result["steps"]],

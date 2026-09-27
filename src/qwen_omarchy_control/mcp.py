@@ -15,7 +15,7 @@ import sys
 import traceback
 import uuid
 
-from . import (browser, macros, outcome, panic, sequence, task, triage, vision,
+from . import (browser, cdp, macros, outcome, panic, sequence, task, triage, vision,
                watch, youtube)
 from .desktop import DesktopController, DesktopError
 from .policy import PolicyError, reject_sensitive_text
@@ -395,13 +395,22 @@ TOOLS = [
         },
     },
     {
+        "name": "browser_tabs",
+        "description": "List open browser tabs with their exact titles and URLs, without "
+                       "changing focus. Use before background browser actions when the "
+                       "target tab is unclear; pass a unique title as page_title. Level 1.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "browser_click",
         "description": "Click a link/button on the current browser page by its "
                        "name, via the browser's own DOM (no OCR, no pointer "
                        "movement - it runs in the background, so no takeover "
                        "announcement is needed). Use this instead of "
-                       "click_element for anything inside Chrome. It verifies the "
-                       "result (URL/title) and reports `verified` honestly. "
+                       "click_element for page content in Chrome. For an in-page "
+                       "button, supply a known expected_text or expected_url so "
+                       "its effect can be verified; otherwise an unchanged URL "
+                       "is reported as unknown, not success. "
                        "Level 2.",
         "inputSchema": {
             "type": "object",
@@ -410,7 +419,11 @@ TOOLS = [
                           "description": "What to click, e.g. 'the Download link' "
                                          "or 'Sign in'."},
                 "page_title": {"type": "string", "description":
-                               "Exact browser tab title for background work."},
+                               "Unique browser tab title from browser_tabs."},
+                "expected_url": {"type": "string", "description":
+                                 "Optional known destination URL; verify after click."},
+                "expected_text": {"type": "string", "description":
+                                  "Optional text that should newly appear after the click."},
             },
             "required": ["goal"],
             "additionalProperties": False,
@@ -690,7 +703,8 @@ class McpHandler:
         "get_active_window", "list_windows", "list_workspaces", "get_monitors",
         "get_audio_status", "get_system_status", "read_window", "read_screen",
         "find_element", "find_text", "describe_actions", "describe_outcome",
-        "browser_read", "youtube_player_state", "watch_start", "watch_check", "watch_stop",
+        "browser_read", "browser_tabs", "youtube_player_state",
+        "watch_start", "watch_check", "watch_stop",
     })
 
     def __init__(self) -> None:
@@ -747,8 +761,9 @@ class McpHandler:
                 "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                 "isError": False,
             })
-        except (DesktopError, PolicyError, panic.PanicError,
-                ValueError, vision.VisionError) as exc:
+        except (DesktopError, PolicyError, panic.PanicError, ValueError,
+                vision.VisionError, browser.BrowserError, cdp.CdpError,
+                task.TaskError, sequence.SequenceError, macros.MacroError) as exc:
             return self._result(msg_id, {
                 "content": [{"type": "text", "text": f"ERROR: {exc}"}],
                 "isError": True,
@@ -916,10 +931,14 @@ class McpHandler:
                 str(args["goal"]) if args.get("goal") else None,
                 page_title=str(args["page_title"]) if args.get("page_title") else None,
             )
+        if name == "browser_tabs":
+            return browser.browser_tabs()
         if name == "browser_click":
             return browser.browser_click(
                 str(args["goal"]),
-                page_title=str(args["page_title"]) if args.get("page_title") else None)
+                page_title=str(args["page_title"]) if args.get("page_title") else None,
+                expected_url=str(args["expected_url"]) if args.get("expected_url") else None,
+                expected_text=str(args["expected_text"]) if args.get("expected_text") else None)
         if name == "browser_open_visible_video":
             return browser.browser_open_visible_video(str(args["title"]))
         if name == "youtube_player_state":

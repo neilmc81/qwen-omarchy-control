@@ -75,6 +75,12 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(cmd[0], "hyprctl")
         self.assertIn("0xaaa", cmd[2])
 
+    def test_duplicate_window_hint_refuses_without_focus(self):
+        self.fake.clients = [dict(WINDOWS[0], address="0xa1", title="Same"),
+                             dict(WINDOWS[0], address="0xa2", title="Same")]
+        with self.assertRaisesRegex(DesktopError, "multiple windows"):
+            self.ctrl.focus_window("chrome")
+
     def test_focus_unknown(self):
         with self.assertRaises(DesktopError):
             self.ctrl.focus_window("nothing-matches-this")
@@ -92,11 +98,19 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(got2["address"], "0xddd")
 
     def test_type_text_uses_wtype_and_enter(self):
+        self.fake.active = dict(WINDOWS[2])
         self.ctrl.type_text("hermes", "hello there", send=True)
         cmds = [c.args[0] for c in desktop.run.call_args_list]
         wtype_calls = [c for c in cmds if c[0] == "wtype"]
         self.assertEqual(wtype_calls[0], ["wtype", "hello there"])
         self.assertEqual(wtype_calls[1], ["wtype", "-k", "Return"])
+
+    def test_type_text_refuses_when_focus_did_not_land(self):
+        with mock.patch.object(desktop, "_dispatch", return_value=(0, "")), \
+                mock.patch("time.sleep"):
+            with self.assertRaisesRegex(DesktopError, "did not receive focus"):
+                self.ctrl.type_text("hermes", "hello")
+        self.assertFalse(any(c.args[0][0] == "wtype" for c in desktop.run.call_args_list))
 
     def test_type_text_rejects_sensitive(self):
         with self.assertRaises(DesktopError):
@@ -114,6 +128,19 @@ class ControllerTest(unittest.TestCase):
         self.assertIn("--yolo", argv)
         self.assertIn("--tui", argv)
         self.assertTrue(any(a.startswith("--query=") and "build a todo app" in a for a in argv))
+
+    def test_launch_files_waits_for_window_before_reporting_ready(self):
+        self.fake.clients = []
+        seen = {"n": 0}
+        def clients():
+            seen["n"] += 1
+            return [] if seen["n"] == 1 else [dict(WINDOWS[0], **{"class": "org.gnome.Nautilus"})]
+        with mock.patch("subprocess.Popen"), \
+                mock.patch.object(self.ctrl, "_clients", side_effect=clients), \
+                mock.patch("time.sleep"):
+            result = self.ctrl.launch_app("files")
+        self.assertIn("window ready", result)
+        self.assertGreaterEqual(seen["n"], 2)
 
     def test_launch_agent_rejects_unknown_and_sensitive(self):
         with self.assertRaises(DesktopError):
@@ -184,7 +211,7 @@ class ControllerTest(unittest.TestCase):
         self.fake.active = {"address": "0xbbb", "class": "org.omarchy.terminal",
                             "at": [0, 0], "size": [800, 600]}
         with mock.patch.object(DesktopController, "_ydotool_ready", return_value=True), \
-             mock.patch.object(desktop, "_dispatch") as dispatch:
+              mock.patch.object(desktop, "_dispatch", return_value=(0, "")) as dispatch:
             desktop.run.side_effect = [(0, "ok"), (0, "ok")]
             self.ctrl.mouse_scroll("up", pages=1)
         # First a pointer move to the active window centre...
@@ -195,6 +222,27 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(argv[:3], ["ydotool", "mousemove", "--wheel"])
         self.assertEqual(argv[3], "-y")
         self.assertTrue(int(argv[4]) > 0)  # "up" is a positive wheel delta
+
+    def test_scroll_announces_before_pointer_move(self):
+        self.fake.active.update({"at": [0, 0], "size": [800, 600]})
+        events = []
+        with mock.patch.object(DesktopController, "_ydotool_ready", return_value=True), \
+                mock.patch.object(DesktopController, "_announce_input",
+                                  side_effect=lambda: events.append("notice")), \
+                mock.patch.object(desktop, "_dispatch",
+                                  side_effect=lambda *a: (events.append("move") or (0, ""))):
+            self.ctrl.mouse_scroll("down")
+        self.assertEqual(events[:2], ["notice", "move"])
+
+    def test_typing_announces_before_focus(self):
+        events = []
+        with mock.patch.object(DesktopController, "_announce_input",
+                               side_effect=lambda: events.append("notice")), \
+                mock.patch.object(desktop, "_dispatch",
+                                  side_effect=lambda *a: (events.append("focus") or (0, ""))), \
+                mock.patch("time.sleep"):
+            self.ctrl.type_text(None, "hello")
+        self.assertEqual(events[:2], ["notice", "focus"])
 
     def test_describe_close_names_active_window(self):
         desc = self.ctrl.describe("close_active_window")
@@ -272,6 +320,19 @@ class FindTextTest(unittest.TestCase):
             out = self.ctrl.find_text("nothing here")
         self.assertFalse(out["found"])
         self.assertNotIn("x", out)
+
+    def test_duplicate_text_refuses_to_choose_first_coordinate(self):
+        words = [{"text": "Save", "left": x, "top": 20, "width": 40,
+                  "height": 10, "conf": 90.0} for x in (10, 210)]
+        with mock.patch.object(desktop, "hyprctl_json",
+                               return_value=[{"x": 0, "y": 0, "width": 400,
+                                              "height": 200, "focused": True}]), \
+                mock.patch.object(desktop, "run_bin", return_value=(0, b"png")), \
+                mock.patch.object(desktop, "_ocr_words", return_value=(0, words)):
+            out = self.ctrl.find_text("Save")
+        self.assertFalse(out["found"])
+        self.assertNotIn("x", out)
+        self.assertEqual(len(out["candidates"]), 2)
 
     def test_multi_word_phrase_matches_by_joining_words(self):
         # Regression: OCR returns one entry PER WORD, so "TARGET BETA" (two

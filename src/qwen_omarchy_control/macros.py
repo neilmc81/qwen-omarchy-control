@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 
 from . import panic, task, vision
+from .desktop import DesktopError
 
 STATE_HOME = Path(
     os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
@@ -181,15 +182,21 @@ def _match_candidate(observation: task.Observation, role: str | None,
     exact = [c for c in observation.candidates if c.label == label]
     if role:
         exact_role = [c for c in exact if c.role == role]
-        if exact_role:
+        if len(exact_role) == 1:
             return exact_role[0]
-    if exact:
+        if len(exact_role) > 1:
+            return None
+    if len(exact) == 1:
         return exact[0]
+    if len(exact) > 1:
+        return None
     contains = [c for c in observation.candidates if label in (c.label or "")]
     if role:
         contains_role = [c for c in contains if c.role == role]
-        if contains_role:
+        if len(contains_role) == 1:
             return contains_role[0]
+        if len(contains_role) > 1:
+            return None
     return None if len(contains) != 1 else contains[0]
 
 
@@ -202,6 +209,8 @@ def replay(name: str, cfg: dict | None = None,
     if not ok:
         raise MacroError(why)
     backend = _backend or task.VisionBackend(cfg)
+    if isinstance(backend, task.VisionBackend):
+        backend.goal = next((s.get("label") for s in macro["steps"] if s.get("label")), None)
 
     history: list[dict] = []
     announce_takeover = True
@@ -218,6 +227,13 @@ def replay(name: str, cfg: dict | None = None,
                               observation.degraded, started)
 
     for index, step in enumerate(macro["steps"], start=1):
+        if isinstance(backend, task.VisionBackend) and backend.goal != step.get("label"):
+            backend.goal = step.get("label")
+            try:
+                observation = backend.observe(window_hint)
+            except (task.TaskError, vision.VisionError) as exc:
+                return _replay_result(name, "needs_agent", history,
+                                      f"step {index}: could not observe the window ({exc})", started)
         if panic.panicked():
             return _replay_result(name, "blocked", history,
                                   "the panic freeze is set", started)
@@ -246,7 +262,7 @@ def replay(name: str, cfg: dict | None = None,
                 )
             backend.execute(action, target, step.get("value"), step.get("key"),
                             step.get("direction"), observation.window)
-        except (panic.PanicError, task.TaskError, vision.VisionError) as exc:
+        except (panic.PanicError, task.TaskError, vision.VisionError, DesktopError) as exc:
             return _replay_result(name, "blocked", history,
                                   f"step {index} ({action}) failed: {exc}", started)
         after = None
@@ -261,10 +277,11 @@ def replay(name: str, cfg: dict | None = None,
             "target": step.get("label") or step.get("value"),
             "verified": verified, "reason": reason,
         })
-        if verified == "unsatisfied":
+        if verified != "satisfied":
+            detail = "no observable change" if verified == "unsatisfied" else "outcome unknown"
             return _replay_result(
                 name, "blocked", history,
-                f"step {index} produced no observable change; stopped rather "
+                f"step {index} had {detail}; stopped rather "
                 "than continue blindly", started)
 
     return _replay_result(name, "done", history,

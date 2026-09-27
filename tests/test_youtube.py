@@ -32,6 +32,8 @@ class PlayerTest(unittest.TestCase):
             with self.assertRaisesRegex(browser.BrowserError, "multiple YouTube"):
                 youtube._watch_page(self.cfg, None)
             self.assertEqual(youtube._watch_page(self.cfg, WATCH.title), WATCH)
+            with self.assertRaisesRegex(browser.BrowserError, "choose from"):
+                youtube._watch_page(self.cfg, "YouTube")
 
     def test_other_sites_and_youtube_home_are_not_players(self):
         for url in ("https://notyoutube.com/watch?v=one", "https://www.youtube.com/"):

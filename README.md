@@ -471,16 +471,21 @@ vocabulary `gui_task` already emits.
 ## Typed browser control (exact, no OCR)
 
 Chrome is the window with no accessibility tree, so the element tools above
-cannot see inside it and fall back to tesseract reading a screenshot. cua-driver
-exposes a better channel for exactly this case: bind to the browser's own
-DevTools endpoint (CDP) and address real DOM elements. Five tools use it:
+cannot see inside it and fall back to tesseract reading a screenshot. The
+browser tools instead use a DevTools endpoint (CDP) to address real DOM
+elements. They try Cua's exact binding where available and use the direct CDP
+fallback when that binding refuses on this Hyprland session:
 
 - **`browser_read`** — read the page as real elements (role, name, value,
   clickable) with an outline. Read-only, no pointer movement, allowed while
   frozen. Optional `goal` narrows it.
+- **`browser_tabs`** — list open tabs and their exact titles before choosing a
+  background target. A unique title fragment is accepted; ambiguous titles
+  return candidates without acting.
 - **`browser_click`** — click a link/button **by name**, through the DOM. No OCR
   and **no mouse movement**: it runs in the background, so no takeover
-  announcement is needed. It verifies the page actually changed.
+  announcement is needed. For in-page buttons, supply a known `expected_text`
+  or `expected_url` to verify the result; unchanged URL/title alone is unknown.
 - **`browser_open_visible_video`** — play a uniquely named video already visible
   on the current YouTube page. It reads the real watch links beyond the browser
   navigation controls, asks Jev to confirm the grounded match, and verifies the

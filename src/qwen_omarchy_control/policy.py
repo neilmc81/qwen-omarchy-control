@@ -73,6 +73,7 @@ def classify(operation: str) -> str:
         "watch_check",
         "watch_stop",
         "browser_read",
+        "browser_tabs",
         "youtube_player_state",
     }:
         return "level1"

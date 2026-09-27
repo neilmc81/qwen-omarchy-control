@@ -286,7 +286,24 @@ def _focused_window() -> dict | None:
 
 
 def resolve_window(cfg: dict, hint: str | None) -> dict:
-    """Pick a window by pid, by matching a title/name substring, or the focused one."""
+    """Resolve one window by pid, title/name, or focus; refuse ambiguous matches."""
+    def unique(matches: list[dict], label: str) -> dict:
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise VisionError(f"no window matches {label!r}")
+        active = _focused_window()
+        if active:
+            focused = [w for w in matches if w.get("pid") == active.get("pid")
+                       and w.get("title") == active.get("title")]
+            if len(focused) == 1:
+                return focused[0]
+        onscreen = [w for w in matches if w.get("is_on_screen")]
+        if len(onscreen) == 1:
+            return onscreen[0]
+        raise VisionError(f"multiple windows match {label!r}; name a unique title "
+                          f"or focus one: {[w.get('title') for w in matches[:8]]}")
+
     if not hint:
         # The tools document "omit the window for the focused window". Honour it
         # rather than raising, so "what can I do here?" works with no argument.
@@ -300,16 +317,11 @@ def resolve_window(cfg: dict, hint: str | None) -> dict:
         if pid:
             try:
                 windows = list_windows(cfg, int(pid))
-                # Prefer the entry whose title matches the active one.
                 title = str(active.get("title") or "").lower()
-                for window in windows:
-                    if title and title[:20] in str(window.get("title") or "").lower():
-                        return window
-                for window in windows:
-                    if window.get("is_on_screen"):
-                        return window
                 if windows:
-                    return windows[0]
+                    exact = [w for w in windows if title and
+                             str(w.get("title") or "").lower() == title]
+                    return unique(exact or windows, title or str(pid))
             except VisionError:
                 pass
         hint = str(active.get("class") or active.get("title") or "")
@@ -321,11 +333,7 @@ def resolve_window(cfg: dict, hint: str | None) -> dict:
         windows = list_windows(cfg, pid)
         if not windows:
             raise VisionError(f"pid {pid} has no windows")
-        # Prefer an on-screen window.
-        for window in windows:
-            if window.get("is_on_screen"):
-                return window
-        return windows[0]
+        return unique(windows, hint)
 
     windows = list_windows(cfg)
     if not windows:
@@ -338,12 +346,8 @@ def resolve_window(cfg: dict, hint: str | None) -> dict:
         if needle in str(w.get("title") or "").lower()
         or needle in str(w.get("app_name") or w.get("name") or "").lower()
     ]
-    if not matches:
-        raise VisionError(f"no window matches {hint!r}")
-    for window in matches:
-        if window.get("is_on_screen"):
-            return window
-    return matches[0]
+    exact = [w for w in matches if needle == str(w.get("title") or "").lower()]
+    return unique(exact or matches, hint)
 
 
 # --- candidates -----------------------------------------------------------
@@ -354,7 +358,8 @@ def _is_interactive(element: dict) -> bool:
     return bool(actions)
 
 
-def candidates_from_tree(tree: dict, cfg: dict) -> tuple[list[Candidate], str]:
+def candidates_from_tree(tree: dict, cfg: dict,
+                         goal: str | None = None) -> tuple[list[Candidate], str]:
     """Actionable, labelled elements from a get_window_state response.
 
     Unlabelled and actionless structural nodes are dropped: a candidate list is
@@ -383,7 +388,14 @@ def candidates_from_tree(tree: dict, cfg: dict) -> tuple[list[Candidate], str]:
             frame=element.get("frame") or {},
         ))
     cap = int(cfg.get("maxCandidates", 40))
-    truncated = len(out) > cap
+    if goal and len(out) > cap:
+        words = set(re.findall(r"\w+", goal.casefold())) - {
+            "the", "a", "an", "click", "open", "button", "folder", "item", "control"}
+        def score(candidate: Candidate) -> tuple[int, int]:
+            label = candidate.label.casefold()
+            overlap = sum(word in label for word in words)
+            return (overlap == len(words) and bool(words), overlap)
+        out.sort(key=score, reverse=True)
     return out[:cap], snapshot_id
 
 
@@ -435,6 +447,9 @@ def select(cfg: dict, goal: str, window: dict, candidates: list[Candidate]) -> d
     except selection.SelectionError as exc:
         raise VisionError(f"{exc}; use the OCR tools instead")
     candidate = by_id[choice.id]
+    if sum(c.role == candidate.role and c.label == candidate.label
+           for c in candidates) > 1:
+        raise VisionError("multiple identical controls match; specify a more precise target")
     return {
         "candidate": candidate,
         "confidence": choice.confidence,
@@ -548,7 +563,7 @@ def find_element(goal: str, window_hint: str | None = None,
             "this window has no accessibility tree (a canvas/Electron surface); "
             "use the OCR tools instead"
         )
-    candidates, snapshot_id = candidates_from_tree(tree, cfg)
+    candidates, snapshot_id = candidates_from_tree(tree, cfg, goal=goal)
     result = select(cfg, goal, window, candidates)
     candidate = result["candidate"]
     return {
@@ -841,15 +856,17 @@ def click_element(goal: str, window_hint: str | None = None,
             raise _panic_error()
         _throttle(int(cfg.get("minIntervalMs", 1200)))
         # Focus the target first: ydotool delivers to the focused surface.
-        try:
-            class_hint = found.get("window_class") or found.get("window_title") or ""
-            if class_hint:
+        class_hint = found.get("window_title") or found.get("window_class") or ""
+        if class_hint:
+            try:
                 controller.focus_window(class_hint)
-        except Exception:  # noqa: BLE001 - focus is best-effort; click still tries
-            pass
+            except Exception as exc:
+                raise VisionError(f"could not focus the selected window; no click sent: {exc}") from exc
         time.sleep(0.4)
         controller.pointer_move(x, y)
         time.sleep(0.25)
+        if controller.get_active_window().get("pid") != found["pid"]:
+            raise VisionError("target window lost focus before the click; no click sent")
         if double:
             effect = _double_click()
         else:

@@ -78,6 +78,13 @@ class CandidateTest(unittest.TestCase):
         cands, _ = vision.candidates_from_tree(tree_doc, cfg)
         self.assertEqual(len(cands), 3)
 
+    def test_named_target_beyond_candidate_cap_is_retained(self):
+        cfg = dict(self.cfg, maxCandidates=3)
+        state = tree(*[element(i, "push button", f"Other {i}") for i in range(50)],
+                     element(50, "push button", "Save changes"))
+        cands, _ = vision.candidates_from_tree(state, cfg, goal="Save changes")
+        self.assertEqual(cands[0].label, "Save changes")
+
     def test_candidate_description_and_id(self):
         c = vision.Candidate(index=5, role="grid cell", label="Documents. Folder")
         self.assertEqual(c.to_id(), "e5")
@@ -192,6 +199,15 @@ class DriverTest(unittest.TestCase):
             with self.assertRaises(vision.VisionError):
                 vision.select(self.cfg, "the Save button", {"title": "T"}, candidates)
 
+    def test_duplicate_identical_controls_refuse(self):
+        candidates = [vision.Candidate(0, "button", "Save"),
+                      vision.Candidate(1, "button", "Save")]
+        jev = {"answers": {"candidate": {"choice": "e0", "confidence": 0.95,
+                                           "probabilities": {"e0": 0.95, "e1": 0.05}}}}
+        with mock.patch.object(vision, "_jev_ask", return_value=jev):
+            with self.assertRaisesRegex(vision.VisionError, "identical controls"):
+                vision.select(self.cfg, "Save", {"title": "T"}, candidates)
+
     def test_click_uses_ydotool_not_cua(self):
         found = {"pid": 7, "window_id": 42, "window_title": "Home",
                  "window_class": "nautilus", "element_index": 0,
@@ -202,6 +218,7 @@ class DriverTest(unittest.TestCase):
                  "elapsed_s": 0.1}
         controller = mock.Mock()
         controller.focus_window.return_value = {"class": "nautilus"}
+        controller.get_active_window.return_value = {"pid": 7}
         controller.pointer_move.return_value = "pointer moved to 125,210"
         controller.mouse_click.return_value = "clicked left button"
         with mock.patch.object(vision, "find_element", return_value=found), \
@@ -237,6 +254,7 @@ class DriverTest(unittest.TestCase):
         controller = mock.Mock()
         controller.pointer_move.return_value = ""
         controller.mouse_click.return_value = ""
+        controller.get_active_window.return_value = {"pid": 7}
         cfg = dict(self.cfg, announceTakeover=False)
         with mock.patch.object(vision, "find_element", return_value=found), \
                 mock.patch.object(vision, "load_config", return_value=cfg), \
@@ -256,6 +274,21 @@ class DriverTest(unittest.TestCase):
         # And no second click: retries are off by default.
         controller.mouse_click.assert_called_once()
         self.assertEqual(result["attempts"], 1)
+
+    def test_focus_lost_after_pointer_move_refuses_click(self):
+        found = {"pid": 7, "window_id": 42, "window_title": "Home",
+                 "window_class": "nautilus", "frame": {"x": 100, "y": 200, "w": 50, "h": 20}}
+        controller = mock.Mock()
+        controller.get_active_window.return_value = {"pid": 99}
+        with mock.patch.object(vision, "find_element", return_value=found), \
+                mock.patch.object(vision, "_notify"), \
+                mock.patch.object(vision, "_window_fingerprint", return_value={}), \
+                mock.patch("qwen_omarchy_control.desktop.DesktopController",
+                           return_value=controller), \
+                mock.patch("time.sleep"):
+            with self.assertRaisesRegex(vision.VisionError, "lost focus"):
+                vision.click_element("Documents folder", cfg=self.cfg)
+        controller.mouse_click.assert_not_called()
 
 
 class VerifyOutcomeTest(unittest.TestCase):
@@ -348,6 +381,16 @@ class FocusedWindowTest(unittest.TestCase):
         with mock.patch("qwen_omarchy_control.desktop.DesktopController"
                         ".get_active_window", side_effect=RuntimeError("boom")):
             self.assertIsNone(vision._focused_window())
+
+    def test_duplicate_named_windows_refuse_without_focus(self):
+        windows = [{"pid": 7, "window_id": 1, "title": "Files", "app_name": "nautilus",
+                    "is_on_screen": True},
+                   {"pid": 8, "window_id": 2, "title": "Files", "app_name": "nautilus",
+                    "is_on_screen": True}]
+        with mock.patch.object(vision, "list_windows", return_value=windows), \
+                mock.patch.object(vision, "_focused_window", return_value=None):
+            with self.assertRaisesRegex(vision.VisionError, "multiple windows"):
+                vision.resolve_window(self.cfg, "Files")
 
 
 class JevOutcomeTest(unittest.TestCase):

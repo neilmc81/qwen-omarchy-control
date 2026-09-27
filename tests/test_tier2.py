@@ -250,6 +250,21 @@ class MacroTest(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertIn("no observable change", result["reason"])
 
+    def test_replay_stops_when_outcome_unknown(self):
+        macros.start("uncertain")
+        macros.record_step({"title": "Files", "app_name": "Files"},
+                           "click", cand(0, label="Documents"), None, None, None)
+        macros.stop()
+        backend = ScriptedBackend([obs([cand(0, label="Documents")], title="Files")])
+        with mock.patch.object(vision, "_verify_outcome",
+                               return_value=("unknown", "window unreadable")):
+            result = macros.replay("uncertain", cfg=self.cfg, _backend=backend)
+        self.assertEqual(result["status"], "blocked")
+
+    def test_replay_refuses_duplicate_identical_targets(self):
+        observation = obs([cand(0, label="Save"), cand(1, label="Save")], title="Editor")
+        self.assertIsNone(macros._match_candidate(observation, "button", "Save"))
+
     def test_missing_macro_raises(self):
         with self.assertRaises(macros.MacroError):
             macros.load("nope")

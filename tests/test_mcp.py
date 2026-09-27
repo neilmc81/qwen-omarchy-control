@@ -36,6 +36,7 @@ class McpHandshakeTest(unittest.TestCase):
         self.assertIn("browser_open_visible_video", names)
         self.assertIn("youtube_player_state", names)
         self.assertIn("youtube_player_control", names)
+        self.assertIn("browser_tabs", names)
         self.assertNotIn("run_shell", names)
         for tool in res["result"]["tools"]:
             self.assertTrue(tool["inputSchema"]["type"] == "object")
@@ -60,6 +61,16 @@ class McpHandshakeTest(unittest.TestCase):
                                                         "amount": 15}})
         self.assertFalse(res["result"]["isError"])
         control.assert_called_once_with("seek_backward", 15, page_title=None)
+
+    def test_browser_target_refusal_is_a_normal_tool_error(self):
+        h = mcp.McpHandler()
+        with mock.patch("qwen_omarchy_control.youtube.player_control",
+                        side_effect=mcp.browser.BrowserError("choose a unique tab")):
+            res = call(h, "tools/call", {"name": "youtube_player_control",
+                                          "arguments": {"action": "pause"}})
+        self.assertTrue(res["result"]["isError"])
+        self.assertIn("choose a unique tab", res["result"]["content"][0]["text"])
+        self.assertNotIn("INTERNAL", res["result"]["content"][0]["text"])
 
     def test_unknown_tool_errors(self):
         h = mcp.McpHandler()
@@ -301,6 +312,12 @@ class FrontendAllowlistTest(unittest.TestCase):
         policy = server["tools"]["describe_actions"]
         self.assertTrue(policy["enabled"])
         self.assertIn("what can i do here", policy["description"].lower())
+
+    def test_voice_prompt_routes_coding_to_available_visible_agent(self):
+        prompt = (REPO_ROOT / "share" / "prompt.example.md").read_text()
+        self.assertIn("call `launch_agent` with the user's prompt", prompt)
+        self.assertIn("call `browser_tabs` when the tab is unclear", prompt)
+        self.assertLess(len(prompt), 16_000)
 
 
 if __name__ == "__main__":

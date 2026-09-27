@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 from . import panic, selection, triage, vision
+from .desktop import DesktopError
 
 TERMINALS = ("done", "blocked", "needs_agent")
 
@@ -142,6 +143,7 @@ class VisionBackend:
     def __init__(self, cfg: dict | None = None) -> None:
         self.cfg = cfg or vision.load_config()
         self._bound: dict | None = None
+        self.goal: str | None = None
 
     def bind(self, window_hint: str | None) -> dict:
         window = vision.resolve_window(self.cfg, window_hint)
@@ -157,13 +159,15 @@ class VisionBackend:
         tree = vision._run_driver(cfg, "get_window_state", {
             "pid": pid, "window_id": window_id, "include_screenshot": False,
         })
+        if tree.get("window_title"):
+            window["title"] = tree["window_title"]
         if tree.get("degraded"):
             return Observation(
                 window=window, candidates=[], fingerprint=None,
                 degraded="this window has no accessibility tree (a canvas/"
                          "Electron surface); do_gui_task cannot drive it",
             )
-        candidates, _ = vision.candidates_from_tree(tree, cfg)
+        candidates, _ = vision.candidates_from_tree(tree, cfg, goal=self.goal)
         fingerprint = vision._window_fingerprint(cfg, pid, window_id)
         return Observation(window=window, candidates=candidates,
                            fingerprint=fingerprint)
@@ -175,6 +179,10 @@ class VisionBackend:
         from .desktop import DesktopController
         ctrl = DesktopController()
 
+        def require_target_focus() -> None:
+            if ctrl.get_active_window().get("pid") != window.get("pid"):
+                raise TaskError("target window lost focus before input; no input sent")
+
         if action in ("click", "double_click"):
             if target is None:
                 raise TaskError("click requires a target element")
@@ -183,15 +191,16 @@ class VisionBackend:
                 raise TaskError("the chosen element has no usable frame")
             x = int(frame["x"]) + int(frame["w"]) // 2
             y = int(frame["y"]) + int(frame["h"]) // 2
-            class_hint = window.get("title") or window.get("app_name") or ""
-            try:
-                if class_hint:
+            class_hint = window.get("title") or window.get("app_name") or window.get("class") or ""
+            if class_hint:
+                try:
                     ctrl.focus_window(class_hint)
-            except Exception:  # noqa: BLE001 - focus is best-effort
-                pass
+                except Exception as exc:
+                    raise TaskError(f"could not focus the selected window: {exc}") from exc
             time.sleep(0.3)
             ctrl.pointer_move(x, y)
             time.sleep(0.2)
+            require_target_focus()
             if action == "double_click":
                 return vision._double_click()
             return ctrl.mouse_click("left")
@@ -205,22 +214,26 @@ class VisionBackend:
                 if frame.get("w") and frame.get("h"):
                     x = int(frame["x"]) + int(frame["w"]) // 2
                     y = int(frame["y"]) + int(frame["h"]) // 2
-                    class_hint = window.get("title") or window.get("app_name") or ""
+                    class_hint = window.get("title") or window.get("app_name") or window.get("class") or ""
                     if class_hint:
                         try:
                             ctrl.focus_window(class_hint)
-                        except Exception:  # noqa: BLE001
-                            pass
+                        except Exception as exc:
+                            raise TaskError(f"could not focus the selected field: {exc}") from exc
                     time.sleep(0.25)
                     ctrl.pointer_move(x, y)
                     time.sleep(0.15)
+                    require_target_focus()
                     ctrl.mouse_click("left")
                     time.sleep(0.15)
-            return ctrl.type_text(None, value, send=bool(key == "Return"))
+            return ctrl.type_text(window.get("title") or window.get("app_name"),
+                                  value, send=bool(key == "Return"))
 
         if action == "press_key":
             if key not in SAFE_KEYS:
                 raise TaskError(f"key {key!r} is not in the safe key list")
+            ctrl.focus_window(window.get("title") or window.get("app_name") or "")
+            require_target_focus()
             return vision._press_key(key)
 
         if action == "scroll":
@@ -386,6 +399,8 @@ def gui_task(goal: str, window: str | None = None,
     if not ok:
         raise TaskError(why)
     backend = _backend or VisionBackend(cfg)
+    if isinstance(backend, VisionBackend):
+        backend.goal = goal
 
     history: list[Step] = []
     changed_ever = False
@@ -428,7 +443,12 @@ def gui_task(goal: str, window: str | None = None,
 
         if action in ("blocked", "needs_agent"):
             return _result(action, goal, history,
-                           f"the model chose {action}", started)
+                            f"the model chose {action}", started)
+
+        floor = float(cfg.get("minConfidence", 0.60))
+        if action != "done" and confidence < floor:
+            return _result("needs_agent", goal, history,
+                           "the next action was not selected confidently", started)
 
         if action == "done":
             confirmed, reason = _verify_done(
@@ -444,8 +464,11 @@ def gui_task(goal: str, window: str | None = None,
 
         try:
             if action in ("click", "double_click"):
-                tid, _ = _answer_choice(payload, f"{action}_target",
-                                        maps[f"{action}_target"])
+                tid, target_confidence = _answer_choice(payload, f"{action}_target",
+                                                         maps[f"{action}_target"])
+                if target_confidence < floor:
+                    return _result("needs_agent", goal, history,
+                                   "the target was not selected confidently", started)
                 if tid == "none":
                     return _result("blocked", goal, history,
                                    "no element offered fits the chosen click", started)
@@ -454,22 +477,34 @@ def gui_task(goal: str, window: str | None = None,
                     return _result("needs_agent", goal, history,
                                    "the chosen element vanished before acting", started)
             elif action == "type_text":
-                ik, _ = _answer_choice(payload, "type_text_input",
-                                       maps["type_text_input"])
+                ik, input_confidence = _answer_choice(payload, "type_text_input",
+                                                      maps["type_text_input"])
+                if input_confidence < floor:
+                    return _result("needs_agent", goal, history,
+                                   "the input value was not selected confidently", started)
                 value = inputs.get(ik)
                 if value is None:
                     return _result("needs_agent", goal, history,
                                    "the model chose an unknown input key", started)
-                tid, _ = _answer_choice(payload, "type_text_target",
-                                        maps["type_text_target"])
+                tid, target_confidence = _answer_choice(payload, "type_text_target",
+                                                         maps["type_text_target"])
+                if target_confidence < floor:
+                    return _result("needs_agent", goal, history,
+                                   "the field was not selected confidently", started)
                 if tid != "none":
                     target = observation.candidate(tid)
             elif action == "press_key":
-                key, _ = _answer_choice(payload, "press_key_value",
-                                        maps["press_key_value"])
+                key, key_confidence = _answer_choice(payload, "press_key_value",
+                                                     maps["press_key_value"])
+                if key_confidence < floor:
+                    return _result("needs_agent", goal, history,
+                                   "the key was not selected confidently", started)
             elif action == "scroll":
-                direction, _ = _answer_choice(payload, "scroll_direction",
-                                              maps["scroll_direction"])
+                direction, direction_confidence = _answer_choice(payload, "scroll_direction",
+                                                                  maps["scroll_direction"])
+                if direction_confidence < floor:
+                    return _result("needs_agent", goal, history,
+                                   "scroll direction was not selected confidently", started)
         except (TaskError, KeyError) as exc:
             return _result("needs_agent", goal, history, str(exc), started)
 
@@ -481,7 +516,10 @@ def gui_task(goal: str, window: str | None = None,
             except (TaskError, vision.VisionError) as exc:
                 return _result("needs_agent", goal, history, str(exc), started)
             fresh_target = fresh.candidate(target.to_id())
-            if fresh_target is None or fresh_target.label != target.label:
+            duplicates = [c for c in fresh.candidates if c.label == target.label
+                          and c.role == target.role]
+            if (fresh_target is None or fresh_target.label != target.label or
+                    fresh_target.role != target.role or len(duplicates) != 1):
                 history.append(Step(index=index, action=action, target_id=target.to_id(),
                                     target_label=target.label, reason="stale target; re-observing",
                                     cost_usd=cost))
@@ -508,7 +546,7 @@ def gui_task(goal: str, window: str | None = None,
                 )
             detail = backend.execute(action, target, value, key, direction,
                                      observation.window)
-        except (panic.PanicError, TaskError, vision.VisionError) as exc:
+        except (panic.PanicError, TaskError, vision.VisionError, DesktopError) as exc:
             return _result("blocked", goal, history,
                            f"{action} failed: {exc}", started)
 

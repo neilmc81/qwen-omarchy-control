@@ -195,6 +195,15 @@ class GuiTaskTest(unittest.TestCase):
         self.assertIn("not offered", result["reason"])
         self.assertEqual(b.actions, [])
 
+    def test_low_confidence_target_is_not_clicked(self):
+        o = obs([cand(0, label="Save")], labels=["Save"])
+        b = ScriptedBackend([o])
+        payload = answers("click", click_target="e0")
+        payload["answers"]["click_target"]["confidence"] = 0.2
+        result = self._run("save", b, [payload])
+        self.assertEqual(result["status"], "needs_agent")
+        self.assertEqual(b.actions, [])
+
     def test_click_none_is_blocked(self):
         o = obs([cand(0, label="Save")], labels=["Save"])
         b = ScriptedBackend([o] * 3)

@@ -105,9 +105,13 @@
           "enabled": true,
           "description": "Read the current browser page as real DOM elements (role, name, clickable) instead of OCR. Exact where read_screen guesses. Read-only, no mouse movement. Use whenever the browser is the window in question; optional goal narrows it (e.g. 'the search box')."
         },
+        "browser_tabs": {
+          "enabled": true,
+          "description": "List open browser tabs and their exact titles without changing focus. Use to identify a page_title before background browser control."
+        },
         "browser_click": {
           "enabled": true,
-          "description": "Click a link/button on the current browser page by name, through the browser's own DOM. No OCR and no pointer movement - it runs in the background, so no takeover announcement is needed. Use this instead of click_element for anything inside Chrome. Verifies URL/title and reports verified honestly."
+          "description": "Click named browser page content in the background. For an in-page button, supply known expected_text or expected_url to verify its effect; an unchanged URL alone is not success. No physical mouse movement."
         },
         "browser_open_visible_video": {
           "enabled": true,

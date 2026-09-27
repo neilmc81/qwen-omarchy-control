@@ -226,7 +226,7 @@ class CdpRoutingTest(unittest.TestCase):
 
     def test_search_uses_the_url_template_by_default(self):
         with mock.patch.object(browser, "browser_navigate",
-                               return_value={"url_after": "https://ddg.test/?q=a+b",
+                               return_value={"url_after": "https://duckduckgo.com/?q=a+b",
                                              "title_after": "a b at DDG"}) as nav:
             out = browser.browser_search("a b", cfg=self.cfg)
         self.assertTrue(out["verified"])
@@ -235,7 +235,7 @@ class CdpRoutingTest(unittest.TestCase):
 
     def test_search_template_encodes_special_characters(self):
         with mock.patch.object(browser, "browser_navigate",
-                               return_value={"url_after": "https://ddg.test/?q=x"}) as nav:
+                               return_value={"url_after": "https://duckduckgo.com/?q=c%2B%2B+%26+rust"}) as nav:
             browser.browser_search("c++ & rust", cfg=self.cfg)
         # '+' and '&' must be encoded, not left to break the query string.
         self.assertIn("c%2B%2B", nav.call_args[0][0])

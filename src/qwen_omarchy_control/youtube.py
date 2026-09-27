@@ -137,8 +137,12 @@ def _watch_page(cfg: dict, page_title: str | None) -> cdp.Page:
     pages = [p for p in cdp.list_pages(browser._cdp_endpoint(cfg)) if _watch_id(p.url)]
     if page_title:
         matches = [p for p in pages if p.title.casefold().strip() == page_title.casefold().strip()]
+        if not matches:
+            matches = [p for p in pages if page_title.casefold().strip() in p.title.casefold()]
         if len(matches) != 1:
-            raise browser.BrowserError("the exact title did not identify one YouTube watch tab")
+            raise browser.BrowserError(
+                "the title did not identify one YouTube watch tab; use browser_tabs "
+                f"to choose from: {[p.title for p in (matches or pages)[:10]]}")
         return matches[0]
     if len(pages) == 1:
         return pages[0]

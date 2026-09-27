@@ -447,11 +447,14 @@ class DesktopController:
         if not self._ydotool_ready():
             raise _fail(YDOTOOL_UNAVAILABLE)
         win = self._resolve_window(window) if window else (self._active() or None)
+        self._announce_input()
         geo = self._window_geometry(win) if win else None
         if geo:
             wx, wy, ww, wh = geo
-            _dispatch(_lua_call("cursor.move",
-                                x=str(wx + ww // 2), y=str(wy + wh // 2)))
+            rc, out = _dispatch(_lua_call("cursor.move",
+                                          x=str(wx + ww // 2), y=str(wy + wh // 2)))
+            if rc != 0:
+                raise _fail(f"could not position the pointer for scrolling: {out}")
         else:
             ww = wh = 400
         span = ww if direction in ("left", "right") else wh
@@ -476,7 +479,7 @@ class DesktopController:
         if not needle:
             return self._active() or None
         aliases = WINDOW_ALIASES.get(needle.lower(), (needle.lower(),))
-        best = None
+        best: list[dict] = []
         best_score = 0
         for c in self._clients():
             if c.get("hidden"):
@@ -488,7 +491,9 @@ class DesktopController:
             for alias in aliases:
                 if not alias:
                     continue
-                if hay == alias:
+                if str(c.get("title") or "").lower() == alias:
+                    score = 4
+                elif hay == alias:
                     score = 3
                 elif alias in str(c.get("class") or "").lower() or alias in str(c.get("initialClass") or "").lower():
                     score = 2
@@ -497,8 +502,18 @@ class DesktopController:
                 else:
                     continue
                 if score > best_score:
-                    best, best_score = c, score
-        return best
+                    best, best_score = [c], score
+                elif score == best_score and c not in best:
+                    best.append(c)
+        if len(best) == 1:
+            return best[0]
+        if len(best) > 1:
+            address = self._active().get("address")
+            focused = [c for c in best if c.get("address") == address]
+            if len(focused) == 1:
+                return focused[0]
+            raise _fail(f"multiple windows match {hint!r}; name a unique title")
+        return None
 
     def focus_window(self, app_or_title: str) -> dict:
         needle = (app_or_title or "").strip()
@@ -542,6 +557,22 @@ class DesktopController:
                              env=session_env(), start_new_session=True)
         except FileNotFoundError:
             raise _fail(f"command not found: {argv[0]}")
+        # A detached launcher returning is not proof the GUI is ready. The next
+        # voice tool often runs immediately; wait for known app classes so it
+        # cannot race the first window's creation.
+        classes = {
+            "files": ("nautilus",), "file manager": ("nautilus",),
+            "browser": ("google-chrome", "chromium", "firefox"),
+            "terminal": ("foot", "ghostty", "alacritty", "kitty"),
+        }.get(name.strip().lower())
+        if classes:
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if any(any(term in str(c.get("class") or "").lower() for term in classes)
+                       for c in self._clients() if not c.get("hidden")):
+                    return f"launched {name} (window ready)"
+                time.sleep(0.1)
+            raise _fail(f"launch requested for {name}, but no window appeared yet")
         if is_terminal:
             return f"launched {name} in a terminal window"
         return f"launched {name}"
@@ -876,6 +907,11 @@ class DesktopController:
             return (exact, len(text), -m["confidence"])
         matches.sort(key=rank)
         best = matches[0]
+        tied = [m for m in matches if m["text"].casefold() == best["text"].casefold()
+                and (m["x"], m["y"]) != (best["x"], best["y"])]
+        if tied:
+            return {"found": False, "text": needle, "candidates": [best, *tied[:8]],
+                    "reason": "multiple on-screen text matches; specify a window or longer phrase"}
         # Deduplicate near-identical candidates from the two passes.
         seen, uniq = {(best["x"], best["y"])}, []
         for m in matches[1:]:
@@ -943,10 +979,15 @@ class DesktopController:
         win = self._resolve_window(window) if window else (self._active() or None)
         if win is None:
             raise _fail("no target window to type into")
+        self._announce_input()
         address = win.get("address")
         if address:
-            _dispatch(_lua_call("focus", window=address))
+            rc, out = _dispatch(_lua_call("focus", window=address))
+            if rc != 0:
+                raise _fail(f"could not focus the target before typing: {out}")
             time.sleep(0.25)
+            if self._active_address() != address:
+                raise _fail("target window did not receive focus; no text was sent")
         rc, out = run(["wtype", text], timeout=8.0)
         if rc != 0:
             raise _fail(f"could not type text: {out}")

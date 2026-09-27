@@ -302,6 +302,16 @@ def page_info(session: PageSession, live: bool = True) -> dict:
     return {"title": session.page.title, "url": session.page.url}
 
 
+def page_contains_text(session: PageSession, text: str) -> bool:
+    """Read whether a phrase is rendered in the page body; no page mutation."""
+    expression = ("Boolean((document.body?.innerText || '').toLocaleLowerCase()"
+                  ".includes(" + json.dumps(text.casefold()) + "))")
+    result = session.call("Runtime.evaluate", {
+        "expression": expression, "returnByValue": True,
+    })
+    return (result.get("result") or {}).get("value") is True
+
+
 _VISIBLE_VIDEO_JS = r"""
 (() => {
   window.__qwen_video_refs = [];
