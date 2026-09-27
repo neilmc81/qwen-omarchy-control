@@ -67,7 +67,8 @@ qwenaudio tui
 `SUPER + SHIFT + V` = **push-to-talk, no window**. The stock Qwen TUI runs
 hidden in a detached tmux session (`qwen-voice`); each press toggles the
 microphone (`/m`), and a desktop notification reports the state. Replies are
-spoken through the speakers; nothing pops up on screen.
+spoken through the speakers for questions, errors and needed clarification;
+successful desktop tasks are silent.
 
 The stock TUI opens the microphone on start. On first press the toggle script
 sends `/m` and then *waits for the TUI to report itself muted*; if it cannot
@@ -90,6 +91,9 @@ A mic icon sits in the top bar right after the weather widget
 (`~/.config/omarchy/plugins/qwen.voice/`, slot `qwen.voice` in `shell.json`):
 - **Green** mic = listening; **dark** mic = muted/stopped.
 - Click it to toggle the microphone (same as the hotkey).
+- Click the adjacent reset icon (󰑐) to restart the Gateway and replace the TUI
+  session. `bin/qwen-voice-reset.sh` preserves listening/muted state and reports
+  failure in a desktop notification; it cannot clear a provider rate limit.
 - State comes from `$XDG_RUNTIME_DIR/qwen-voice/state.json`, written by
   `bin/qwen-voice-state` from the TUI's own visible output (the stock package
   exposes the client mute state nowhere else). `bin/qwen-voice-watch.sh` polls
@@ -106,9 +110,17 @@ Set in `~/.config/qwaudio/USER.md` (the gateway's user-preference file):
 - ordinary answers are 1-2 short sentences; lead with the conclusion;
 - when unsure, one short "I'm not sure" + at most one brief clarifying question,
   then stop; no rambling or guessing;
-- after a desktop action, confirm in one sentence.
+- after a successful task, stay silent; answer questions and speak errors or
+  necessary confirmations.
 
-These apply to new voice sessions (restart the gateway service to reapply).
+The Gateway's external-tool path otherwise forces a post-tool speech response.
+The user service drop-in `qwen-audio-agent-gateway.service.d/silent-success.conf`
+preloads `bin/qwen-silent-success.mjs`: completed desktop actions suppress that
+follow-up, while errors, pending confirmations and informational questions still
+receive speech. The npm package is not edited. A clone can install the tracked
+template `share/qwen-audio-silent-success.conf` as that drop-in, then run
+`systemctl --user daemon-reload` and reset Qwen. New preferences require a new
+voice session; the reset button handles that.
 
 ## Cost tracking
 

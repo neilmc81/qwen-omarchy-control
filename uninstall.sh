@@ -41,7 +41,16 @@ if [ -f "$BINDINGS" ] && grep -q 'qwen-voice-toggle\|qwen-omarchy-control' "$BIN
   command -v hyprctl >/dev/null && hyprctl reload >/dev/null 2>&1 && echo "Hyprland reloaded"
 fi
 
-# 2. Remove the project.
+# 2. Remove our Gateway preload before removing the file it references.
+DROPIN="$HOME/.config/systemd/user/qwen-audio-agent-gateway.service.d/silent-success.conf"
+if [ -f "$DROPIN" ] && grep -q 'qwen-silent-success.mjs' "$DROPIN"; then
+  rm "$DROPIN"
+  rmdir "$(dirname "$DROPIN")" 2>/dev/null || true
+  systemctl --user daemon-reload
+  echo "Removed Qwen silent-success Gateway preload"
+fi
+
+# 3. Remove the project.
 if [ -d "$PROJECT" ]; then
   if [ "$PURGE" = "1" ]; then
     rm -rf "$PROJECT"
@@ -52,7 +61,7 @@ if [ -d "$PROJECT" ]; then
   fi
 fi
 
-# 3. Optionally clear config/env copies inside qwaudio (kept by default).
+# 4. Optionally clear config/env copies inside qwaudio (kept by default).
 if [ "$PURGE" = "1" ]; then
   echo "Purging frontend MCP reference from ~/.config/qwaudio/config.env"
   sed -i '/QWEN_AUDIO_FRONTEND_MCP_CONFIG=/d' "$HOME/.config/qwaudio/config.env" 2>/dev/null || true

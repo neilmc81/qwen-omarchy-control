@@ -8,7 +8,8 @@ import qs.Ui
 // State is published by bin/qwen-voice-state from the TUI's own visible output
 // (the stock package exposes the client mute state nowhere else), refreshed by
 // bin/qwen-voice-watch.sh only when it changes. No vendor file is patched.
-// Uses the standard BarIconButton so sizing/centering matches the other icons.
+// The separate reset button restarts the Gateway and TUI without changing the
+// previous microphone state. Both controls use the standard BarIconButton.
 
 BarWidget {
   id: root
@@ -68,21 +69,38 @@ BarWidget {
     onFileChanged: state.reload()
   }
 
-  implicitWidth: button.implicitWidth
-  implicitHeight: button.implicitHeight
+  implicitWidth: controls.implicitWidth
+  implicitHeight: controls.implicitHeight
 
-  BarIconButton {
-    id: button
+  Row {
+    id: controls
     anchors.fill: parent
-    bar: root.bar
-    text: root.icons[root.status] || root.icons["muted"]
-    active: root.listening
-    activeColor: root.listenColor
-    dimmed: !root.listening
-    tooltipText: root.tooltipText
-    onPressed: function(b) {
-      if (b === Qt.LeftButton && root.bar)
-        root.bar.run(Quickshell.env("HOME") + "/.local/share/qwen-omarchy-control/bin/qwen-voice-toggle.sh")
+
+    BarIconButton {
+      id: button
+      height: implicitHeight
+      bar: root.bar
+      text: root.icons[root.status] || root.icons["muted"]
+      active: root.listening
+      activeColor: root.listenColor
+      dimmed: !root.listening
+      tooltipText: root.tooltipText
+      onPressed: function(b) {
+        if (b === Qt.LeftButton && root.bar)
+          root.bar.run(Quickshell.env("HOME") + "/.local/share/qwen-omarchy-control/bin/qwen-voice-toggle.sh")
+      }
+    }
+
+    BarIconButton {
+      id: resetButton
+      height: implicitHeight
+      bar: root.bar
+      text: "󰑐"
+      tooltipText: "Reset Qwen voice (restart Gateway and voice session)"
+      onPressed: function(b) {
+        if (b === Qt.LeftButton && root.bar)
+          root.bar.run(Quickshell.env("HOME") + "/.local/share/qwen-omarchy-control/bin/qwen-voice-reset.sh")
+      }
     }
   }
 }

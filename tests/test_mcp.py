@@ -319,6 +319,13 @@ class FrontendAllowlistTest(unittest.TestCase):
         self.assertIn("call `browser_tabs` when the tab is unclear", prompt)
         self.assertLess(len(prompt), 16_000)
 
+    def test_voice_action_success_is_silent(self):
+        prompt = (REPO_ROOT / "share" / "prompt.example.md").read_text()
+        assistant = (REPO_ROOT / "share" / "assistant.example.md").read_text()
+        self.assertIn("successful completion is silent", prompt)
+        self.assertIn("Successful\ntasks are silent", assistant)
+        self.assertNotIn("confirm in one sentence", assistant)
+
 
 if __name__ == "__main__":
     unittest.main()
