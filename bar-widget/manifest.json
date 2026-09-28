@@ -4,7 +4,7 @@
   "name": "Qwen Voice",
   "version": "0.1.0",
   "author": "qwen-omarchy-control",
-  "description": "Shows the Qwen voice microphone state. Mic button toggles listening; reset button restarts Gateway and voice session.",
+  "description": "Shows whether the Qwen voice assistant is listening (green) or muted/stopped (dark). Click toggles the microphone.",
   "kinds": [
     "bar-widget"
   ],

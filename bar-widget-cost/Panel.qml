@@ -81,6 +81,10 @@ Panel {
     if (root.bar) root.bar.run(root.home + "/.local/share/qwen-omarchy-control/bin/qwen-voice-panic.sh")
   }
 
+  function resetVoice() {
+    if (root.bar) root.bar.run(root.home + "/.local/share/qwen-omarchy-control/bin/qwen-voice-reset.sh")
+  }
+
   FileView {
     path: root.stateHome + "/qwen-voice/cost/overview.json"
     watchChanges: true
@@ -268,6 +272,31 @@ Panel {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
             onClicked: root.toggleFreeze()
+          }
+        }
+
+        // Recover a stuck voice session without leaving the Qwen helper panel.
+        // The reset script restarts Gateway + TUI and preserves mic state.
+        Rectangle {
+          width: col.width
+          height: 30
+          radius: 4
+          color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.10)
+          border.width: 1
+          border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.25)
+
+          Text {
+            anchors.centerIn: parent
+            text: "↻  Reset Qwen voice assistant"
+            font.family: root.fontFamily
+            font.pixelSize: 10
+            font.bold: true
+            color: root.fg
+          }
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.resetVoice()
           }
         }
 

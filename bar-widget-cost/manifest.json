@@ -4,7 +4,7 @@
   "name": "Qwen Voice Cost",
   "version": "0.1.0",
   "author": "qwen-omarchy-control",
-  "description": "Qwen voice cost, usage and a quick helper: live Alibaba Cloud billing, token usage, the voice/stop/freeze hotkeys, and a one-click freeze for agent input.",
+  "description": "Qwen voice cost and helper: billing, hotkeys, a one-click input freeze and a voice-session reset button.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "Qwen Voice Cost",
-    "description": "Qwen voice cost tracker plus a helper: billing, token usage, hotkeys, and a freeze button for agent input.",
+    "description": "Qwen voice cost tracker plus a helper with hotkeys, input freeze and voice reset.",
     "category": "AI",
     "aliases": [
       "cost",

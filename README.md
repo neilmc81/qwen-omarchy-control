@@ -91,9 +91,6 @@ A mic icon sits in the top bar right after the weather widget
 (`~/.config/omarchy/plugins/qwen.voice/`, slot `qwen.voice` in `shell.json`):
 - **Green** mic = listening; **dark** mic = muted/stopped.
 - Click it to toggle the microphone (same as the hotkey).
-- Click the adjacent reset icon (󰑐) to restart the Gateway and replace the TUI
-  session. `bin/qwen-voice-reset.sh` preserves listening/muted state and reports
-  failure in a desktop notification; it cannot clear a provider rate limit.
 - State comes from `$XDG_RUNTIME_DIR/qwen-voice/state.json`, written by
   `bin/qwen-voice-state` from the TUI's own visible output (the stock package
   exposes the client mute state nowhere else). `bin/qwen-voice-watch.sh` polls
@@ -135,6 +132,10 @@ The Helper section is a quick reference plus a live control:
 - **Freeze button** — toggles the same flag as the panic hotkey. It reads the
   flag file live, so the button shows "Agent input FROZEN — click to resume"
   whether the freeze came from the button or the key.
+- **Reset Qwen voice assistant button** — inside this dropdown, below Freeze.
+  It runs `bin/qwen-voice-reset.sh` to restart the Gateway and TUI, preserving
+  the listening/muted state. Failures show a desktop notification; resetting
+  cannot clear a provider rate limit.
 - A one-line reminder that Qwen announces when it is about to use the mouse, and
   that saying "stop" interrupts it.
 
